@@ -172,11 +172,11 @@ http://127.0.0.1:8000/
 ```text
 исходный код проекта
 uv.lock или requirements.txt
-docs/database_schema.sql
-docs/er_diagram.pdf
 docs/universal_development_algorithm_gost.pdf
 docs/debug_report.docx или скриншоты
 ```
+
+SQL-скрипт и ER-диаграмму делай через DBeaver после `migrate` и `import_data`.
 
 ## 11. Git
 

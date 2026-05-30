@@ -141,11 +141,11 @@ docs/universal_development_algorithm_gost.pdf
 docs/adapt_to_new_theme.md
 docs/exam_action_sequence.md
 docs/simple_import_data_guide.md
-docs/er_diagram.pdf
-docs/database_schema.sql
 docs/debug_report_checklist.md
 docs/git_history_plan.md
 docs/windows_commands.md
 ```
 
 PDF нужен для требования: блок-схема алгоритма по ГОСТ 19.701-90.
+
+SQL-скрипт БД и ER-диаграмму удобнее делать через DBeaver из уже созданной PostgreSQL-базы.
