@@ -20,8 +20,6 @@ from core.models import (
 )
 
 
-# 1. МЕНЯТЬ ТОЛЬКО ЭТОТ БЛОК, ЕСЛИ НА ЭКЗАМЕНЕ ДРУГИЕ EXCEL.
-
 FILES = {
     "points": "Пункты выдачи_import.xlsx",
     "products": "Tovar.xlsx",
@@ -69,8 +67,6 @@ ROLE_MAP = {
 
 DATE_FORMATS = ("%d.%m.%Y", "%Y-%m-%d")
 
-
-# 2. НИЖЕ ОБЫЧНО МЕНЯТЬ НИЧЕГО НЕ НУЖНО.
 
 def cell(row, column):
     if column >= len(row):
