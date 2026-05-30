@@ -1,176 +1,210 @@
-# Как быстро адаптировать проект под другую тему
+# Как переделывать проект под другую тему
 
-Этот проект лучше воспринимать как экзаменационный шаблон.
+Этот проект не является универсальным конструктором. Это простой Django-шаблон, который легче переделывать вручную, чем писать с нуля.
 
-Внутри кода главный объект называется `Product`, а заказ называется `Order`. На экзамене можно оставить эти внутренние названия, если времени мало. Пользователь в браузере увидит правильные подписи из `core/exam_config.py`.
+Если тема полностью другая, например вместо магазина обуви дали шиномонтажку, думай не про “одно новое поле”, а про замену предметной области.
 
-## Главное правило
+## Главная Идея
 
-Сначала меняй видимый текст:
-
-```text
-core/exam_config.py
-```
-
-Excel-файлы и номера колонок меняй в:
+В проекте есть типовая структура:
 
 ```text
-core/management/commands/import_data.py
+Role              роли
+User              пользователи
+Product           главная сущность
+Order             заказ / заявка
+OrderItem         позиции заказа / заявки
+Category          категория
+Supplier          поставщик / исполнитель / партнер
+Manufacturer      производитель / бренд
+Unit              единица измерения
+OrderStatus       статус
+PickupPoint       пункт выдачи / адрес / место выполнения
 ```
 
-И только если этого не хватает, переходи к моделям, формам и шаблонам.
+На экзамене можно оставить технические имена `Product`, `Order`, `OrderItem`, если структура задания похожая. В браузере можно просто заменить текст в HTML.
 
-## Что меняется почти всегда
+Если эксперт смотрит код очень внимательно или тема сильно отличается, можно переименовать модели, но это дольше и рискованнее.
 
-### 1. Название организации и сущностей
+## Что Менять В Первую Очередь
 
-В `APP_TEXT` поменяй видимые подписи.
+### 1. Текст На Страницах
 
-Пример для шиномонтажки:
-
-```python
-APP_TEXT = {
-    "company_name": "Шиномонтаж",
-    "catalog_menu": "Услуги",
-    "orders_menu": "Заявки",
-    "catalog_title": "Список услуг",
-    "add_item": "Добавить услугу",
-    "edit_item": "Редактирование услуги",
-    "delete_item": "Удаление услуги",
-    "item_id": "ID услуги",
-    "item_empty": "Услуги не найдены.",
-}
-```
-
-Остальные ключи оставь, но замени слова `товар`/`заказ` на слова из новой темы.
-
-### 2. Названия Excel-файлов
-
-В `core/management/commands/import_data.py` поменяй `FILES`:
-
-```python
-FILES = {
-    "points": "Пункты выдачи_import.xlsx",
-    "products": "Uslugi.xlsx",
-    "users": "user_import.xlsx",
-    "orders": "Zayavki.xlsx",
-}
-```
-
-### 3. Номера колонок Excel
-
-Если в Excel колонки идут в другом порядке, меняй только словари:
-
-```python
-PRODUCT = {
-    "article": 0,
-    "name": 1,
-    "unit": 2,
-    "price": 3,
-    "supplier": 4,
-    "manufacturer": 5,
-    "category": 6,
-    "discount": 7,
-    "quantity": 8,
-    "description": 9,
-    "photo": 10,
-}
-```
-
-Номера считаются с нуля:
+Файлы:
 
 ```text
-первая колонка  -> 0
-вторая колонка  -> 1
-третья колонка  -> 2
-```
-
-### 4. Поля поиска
-
-Если поменялись поля модели, обнови:
-
-```python
-PRODUCT_SEARCH_FIELDS = (
-    "article",
-    "name",
-    "description",
-    "category__name",
-)
-```
-
-Если поле обычное, пишется `name`.
-
-Если поле через внешний ключ, пишется `category__name`.
-
-### 5. Сортировка
-
-Если по заданию сортировать не по количеству, а например по цене:
-
-```python
-PRODUCT_SORTS = {
-    "price_asc": ("price", "id"),
-    "price_desc": ("-price", "id"),
-}
-```
-
-После этого нужно поменять варианты в шаблоне:
-
-```text
+core/templates/core/base.html
 core/templates/core/product_list.html
+core/templates/core/product_form.html
+core/templates/core/product_confirm_delete.html
+core/templates/core/order_list.html
+core/templates/core/order_form.html
+core/templates/core/order_confirm_delete.html
 ```
 
-## Когда одного `exam_config.py` недостаточно
-
-Если новая тема имеет те же типовые действия:
-
-- авторизация;
-- список главных объектов;
-- поиск;
-- фильтр;
-- сортировка;
-- добавление/редактирование/удаление;
-- заказы/заявки;
-
-то чаще всего хватит:
+Пример:
 
 ```text
-core/exam_config.py
-core/management/commands/import_data.py
+ООО Обувь -> Шиномонтаж
+Товары -> Услуги
+Заказы -> Заявки
+Добавить товар -> Добавить услугу
 ```
 
-Если в новой теме появились совсем новые данные, например:
+### 2. Модели И Сущности
 
-- длительность услуги;
-- номер автомобиля;
-- размер шин;
-- мастер;
-- время записи;
-
-тогда нужно добавить поля в:
+Файл:
 
 ```text
 core/models.py
-core/forms.py
-core/templates/core/product_list.html
-core/templates/core/product_form.html
 ```
 
-Потом выполнить:
+Если новая тема похожая, можно оставить `Product` и `Order`.
+
+Если данные другие, меняешь поля внутри моделей.
+
+Пример для услуги:
+
+```python
+class Product(models.Model):
+    article = models.CharField(max_length=50, unique=True)
+    name = models.CharField(max_length=255)
+    price = models.DecimalField(max_digits=10, decimal_places=2)
+    category = models.ForeignKey(Category, on_delete=models.PROTECT)
+    description = models.TextField()
+    photo = models.ImageField(upload_to="products/", null=True, blank=True)
+```
+
+То есть можно убрать поля, которые не нужны, и добавить нужные.
+
+После изменения моделей:
 
 ```powershell
 uv run python manage.py makemigrations
 uv run python manage.py migrate
 ```
 
-## Самый быстрый экзаменационный путь
+### 3. Формы
 
-Если тема другая, но структура задания похожая:
+Файл:
 
-1. Не переименовывай классы `Product` и `Order`.
-2. Поменяй видимый текст в `APP_TEXT`.
-3. Поменяй Excel-файлы и колонки в `import_data.py`.
-4. Проверь импорт.
-5. Проверь страницы.
-6. Только потом добавляй новые поля, если они реально нужны по условию.
+```text
+core/forms.py
+```
 
-Это быстрее и надежнее, чем переименовывать весь проект.
+В `ProductForm` меняешь список `fields` и подписи `labels` под новые поля модели.
+
+Если в модели нет `manufacturer`, значит в форме его тоже быть не должно.
+
+### 4. Список И CRUD
+
+Файл:
+
+```text
+core/views.py
+```
+
+Там меняются:
+
+- `select_related(...)`;
+- поля поиска в `Q(...)`;
+- сортировка;
+- сообщения пользователю.
+
+Пример:
+
+```python
+products = products.filter(
+    Q(name__icontains=query)
+    | Q(description__icontains=query)
+    | Q(category__name__icontains=query)
+)
+```
+
+### 5. HTML Вывод Полей
+
+Файл:
+
+```text
+core/templates/core/product_list.html
+```
+
+Если в модели нет `manufacturer`, удали:
+
+```html
+<dt>Производитель</dt>
+<dd>{{ product.manufacturer }}</dd>
+```
+
+Если появилось поле `duration`, добавь:
+
+```html
+<dt>Длительность</dt>
+<dd>{{ product.duration }}</dd>
+```
+
+### 6. Импорт Excel
+
+Файл:
+
+```text
+core/management/commands/import_data.py
+```
+
+Вверху меняешь:
+
+```text
+FILES
+PRODUCT
+USER
+ORDER
+ROLE_MAP
+```
+
+Ниже, в `import_products`, меняешь создание справочников и `defaults`.
+
+Если в новой теме нет производителя, убираешь:
+
+```python
+manufacturer, _ = Manufacturer.objects.get_or_create(...)
+"manufacturer": manufacturer,
+```
+
+Если появилось поле `duration`, добавляешь:
+
+```python
+"duration": number(cell(row, PRODUCT["duration"])),
+```
+
+## Быстрый Порядок Переделки
+
+```text
+1. Прочитать задание.
+2. Выписать сущности и поля.
+3. Решить: оставляю Product/Order или переименовываю.
+4. Поменять models.py.
+5. Поменять forms.py.
+6. Поменять views.py.
+7. Поменять HTML-шаблоны.
+8. Поменять import_data.py.
+9. Выполнить makemigrations и migrate.
+10. Выполнить import_data.
+11. Проверить страницы.
+```
+
+## Самое Важное
+
+Если предметная область другая, одного файла для замены быть не может.
+
+Минимальный набор файлов для переделки:
+
+```text
+core/models.py
+core/forms.py
+core/views.py
+core/management/commands/import_data.py
+core/templates/core/product_list.html
+core/templates/core/product_form.html
+```
+
+Это нормально. Главное - менять их в одном и том же порядке.

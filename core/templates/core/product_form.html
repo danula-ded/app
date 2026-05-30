@@ -1,16 +1,16 @@
 {% extends "core/base.html" %}
 {% load static %}
 
-{% block title %}{% if object %}{{ app_text.edit_item }}{% else %}{{ app_text.add_item }}{% endif %}{% endblock %}
+{% block title %}{% if object %}Редактирование товара{% else %}Добавление товара{% endif %}{% endblock %}
 
 {% block content %}
 <div class="page-title">
-    <h1>{% if object %}{{ app_text.edit_item }}{% else %}{{ app_text.add_item }}{% endif %}</h1>
+    <h1>{% if object %}Редактирование товара{% else %}Добавление товара{% endif %}</h1>
     <a class="button" href="{% url 'product_list' %}">Назад</a>
 </div>
 
 {% if object %}
-    <p><b>{{ app_text.item_id }}:</b> {{ object.id }}</p>
+    <p><b>ID товара:</b> {{ object.id }}</p>
 {% endif %}
 
 <form class="form-page" method="post" enctype="multipart/form-data">

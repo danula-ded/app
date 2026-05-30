@@ -1,15 +1,15 @@
 {% extends "core/base.html" %}
 
-{% block title %}{% if object %}{{ app_text.edit_order }}{% else %}{{ app_text.add_order }}{% endif %}{% endblock %}
+{% block title %}{% if object %}Редактирование заказа{% else %}Добавление заказа{% endif %}{% endblock %}
 
 {% block content %}
 <div class="page-title">
-    <h1>{% if object %}{{ app_text.edit_order }}{% else %}{{ app_text.add_order }}{% endif %}</h1>
+    <h1>{% if object %}Редактирование заказа{% else %}Добавление заказа{% endif %}</h1>
     <a class="button" href="{% url 'order_list' %}">Назад</a>
 </div>
 
 {% if object %}
-    <p><b>{{ app_text.order_id }}:</b> {{ object.id }}</p>
+    <p><b>ID заказа:</b> {{ object.id }}</p>
 {% endif %}
 
 <form class="form-page" method="post">

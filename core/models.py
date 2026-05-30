@@ -5,8 +5,6 @@ from django.contrib.auth.models import AbstractUser
 from django.db import models
 from PIL import Image
 
-from .exam_config import PRODUCT_PHOTO_SIZE
-
 
 def delete_media_file(file_name):
     if not file_name:
@@ -121,7 +119,7 @@ class Product(models.Model):
             return
 
         with Image.open(photo_path) as image:
-            image.thumbnail(PRODUCT_PHOTO_SIZE)
+            image.thumbnail((300, 200))
 
             if image.mode in ("RGBA", "P"):
                 image = image.convert("RGB")

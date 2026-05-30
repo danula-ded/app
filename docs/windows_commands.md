@@ -104,7 +104,6 @@ git push -u origin main
 ## 8. Главные файлы для изменения
 
 ```text
-core/exam_config.py       - тема сайта, роли, поля поиска, сортировки
 core/management/commands/import_data.py - Excel-файлы и номера колонок
 core/models.py            - таблицы БД
 core/forms.py             - формы добавления/редактирования
@@ -117,19 +116,16 @@ static/css/style.css      - стили
 
 Например, вместо обуви дали шиномонтажку.
 
-Сначала открыть:
+Для текста и полей открыть:
 
 ```text
-core/exam_config.py
+core/templates/core/
+core/models.py
+core/forms.py
+core/views.py
 ```
 
-Поменять:
-
-```text
-APP_TEXT - видимые названия сайта, кнопок и страниц
-```
-
-Потом открыть:
+Для Excel открыть:
 
 ```text
 core/management/commands/import_data.py

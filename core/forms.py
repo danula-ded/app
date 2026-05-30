@@ -4,7 +4,6 @@ from django import forms
 from django.core.exceptions import ValidationError
 from PIL import Image
 
-from .exam_config import APP_TEXT
 from .models import Order, OrderItem, Product
 
 
@@ -80,8 +79,8 @@ class ProductForm(forms.ModelForm):
 
 class OrderForm(forms.ModelForm):
     products_text = forms.CharField(
-        label=APP_TEXT["order_items_label"],
-        help_text=APP_TEXT["order_items_help"],
+        label="Артикулы товаров",
+        help_text="Формат: А112Т4, 2, F635R4, 2",
         widget=forms.Textarea(attrs={"rows": 3}),
     )
 
@@ -129,7 +128,7 @@ class OrderForm(forms.ModelForm):
                 raise ValidationError("Количество должно быть целым числом.") from error
 
             if count <= 0:
-                raise ValidationError(APP_TEXT["positive_order_count"])
+                raise ValidationError("Количество товара в заказе должно быть больше нуля.")
 
             product = Product.objects.filter(article=article).first()
 

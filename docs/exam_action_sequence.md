@@ -33,24 +33,30 @@ uv run python manage.py check
 Справочники: категория, поставщик, статус, пункт выдачи
 ```
 
-Если тема похожая, не переименовывай весь проект. Оставь внутренние `Product` и `Order`, а видимые названия поменяй позже.
+Если тема похожая, не переименовывай весь проект. Оставь внутренние `Product` и `Order`, а видимые названия поменяй в HTML.
 
-## 3. Настроить видимый текст
+## 3. Переделать предметную область
 
-Файл:
+Если сущности почти такие же, можно ограничиться текстом и импортом.
+
+Если сущности другие, меняй файлы в таком порядке:
 
 ```text
-core/exam_config.py
+core/models.py
+core/forms.py
+core/views.py
+core/templates/core/
+core/management/commands/import_data.py
 ```
 
-Менять в первую очередь:
+Для текста на страницах чаще всего нужны:
 
 ```text
-APP_TEXT
-ADMIN_ROLES
-MANAGER_ROLES
-PRODUCT_SEARCH_FIELDS
-PRODUCT_SORTS
+core/templates/core/base.html
+core/templates/core/product_list.html
+core/templates/core/product_form.html
+core/templates/core/order_list.html
+core/templates/core/order_form.html
 ```
 
 Если дали шиномонтажку, меняешь `Товары` на `Услуги`, `Заказы` на `Заявки`.
@@ -65,7 +71,9 @@ core/models.py
 
 Если структура похожая, модели можно почти не трогать.
 
-Если появились новые обязательные поля, добавляешь их в модель и потом делаешь:
+Если сущности другие, переписываешь поля моделей под новые Excel-файлы и связи.
+
+После изменения моделей:
 
 ```powershell
 uv run python manage.py makemigrations
@@ -78,12 +86,6 @@ uv run python manage.py migrate
 
 ```text
 core/management/commands/import_data.py
-```
-
-В самом верху есть блок:
-
-```text
-МЕНЯТЬ ТОЛЬКО ЭТОТ БЛОК
 ```
 
 Там меняешь:

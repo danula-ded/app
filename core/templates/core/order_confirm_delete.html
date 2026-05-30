@@ -1,11 +1,11 @@
 {% extends "core/base.html" %}
 
-{% block title %}{{ app_text.delete_order }}{% endblock %}
+{% block title %}Удаление заказа{% endblock %}
 
 {% block content %}
-<h1>{{ app_text.delete_order }}</h1>
+<h1>Удаление заказа</h1>
 
-<p>{{ app_text.delete_order_question }} №{{ object.id }}?</p>
+<p>Удалить заказ №{{ object.id }}?</p>
 
 <form method="post">
     {% csrf_token %}

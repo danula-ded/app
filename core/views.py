@@ -6,7 +6,6 @@ from django.shortcuts import redirect
 from django.urls import reverse_lazy
 from django.views.generic import CreateView, DeleteView, ListView, UpdateView
 
-from .exam_config import APP_TEXT, PRODUCT_RELATIONS, PRODUCT_SEARCH_FIELDS, PRODUCT_SORTS
 from .forms import OrderForm, ProductForm
 from .models import Order, Product, Supplier
 from .permissions import is_admin, is_manager_or_admin
@@ -20,7 +19,7 @@ class AdminRequiredMixin(LoginRequiredMixin, UserPassesTestMixin):
 
     def handle_no_permission(self):
         if self.request.user.is_authenticated:
-            messages.error(self.request, APP_TEXT["admin_only"])
+            messages.error(self.request, "Это действие доступно только администратору.")
             return redirect("product_list")
 
         return super().handle_no_permission()
@@ -34,7 +33,7 @@ class ManagerRequiredMixin(LoginRequiredMixin, UserPassesTestMixin):
 
     def handle_no_permission(self):
         if self.request.user.is_authenticated:
-            messages.error(self.request, APP_TEXT["orders_forbidden"])
+            messages.error(self.request, "Раздел заказов доступен менеджеру и администратору.")
             return redirect("product_list")
 
         return super().handle_no_permission()
@@ -50,7 +49,12 @@ class ProductListView(ListView):
     context_object_name = "products"
 
     def get_queryset(self):
-        products = Product.objects.select_related(*PRODUCT_RELATIONS)
+        products = Product.objects.select_related(
+            "category",
+            "manufacturer",
+            "supplier",
+            "unit",
+        )
 
         if not is_manager_or_admin(self.request.user):
             return products.order_by("id")
@@ -60,18 +64,24 @@ class ProductListView(ListView):
         sort = self.request.GET.get("sort", "")
 
         if query:
-            search_filter = Q()
-
-            for field in PRODUCT_SEARCH_FIELDS:
-                search_filter |= Q(**{f"{field}__icontains": query})
-
-            products = products.filter(search_filter)
+            products = products.filter(
+                Q(article__icontains=query)
+                | Q(name__icontains=query)
+                | Q(description__icontains=query)
+                | Q(category__name__icontains=query)
+                | Q(manufacturer__name__icontains=query)
+                | Q(supplier__name__icontains=query)
+                | Q(unit__name__icontains=query)
+            )
 
         if supplier_id.isdigit():
             products = products.filter(supplier_id=supplier_id)
 
-        if sort in PRODUCT_SORTS:
-            return products.order_by(*PRODUCT_SORTS[sort])
+        if sort == "quantity_asc":
+            return products.order_by("quantity", "id")
+
+        if sort == "quantity_desc":
+            return products.order_by("-quantity", "id")
 
         return products.order_by("id")
 
@@ -94,7 +104,7 @@ class ProductCreateView(AdminRequiredMixin, CreateView):
     success_url = reverse_lazy("product_list")
 
     def form_valid(self, form):
-        messages.success(self.request, APP_TEXT["item_added"])
+        messages.success(self.request, "Товар добавлен.")
         return super().form_valid(form)
 
 
@@ -105,7 +115,7 @@ class ProductUpdateView(AdminRequiredMixin, UpdateView):
     success_url = reverse_lazy("product_list")
 
     def form_valid(self, form):
-        messages.success(self.request, APP_TEXT["item_updated"])
+        messages.success(self.request, "Товар обновлен.")
         return super().form_valid(form)
 
 
@@ -118,10 +128,10 @@ class ProductDeleteView(AdminRequiredMixin, DeleteView):
         try:
             response = super().form_valid(form)
         except ProtectedError:
-            messages.error(self.request, APP_TEXT["item_delete_blocked"])
+            messages.error(self.request, "Товар нельзя удалить, потому что он есть в заказе.")
             return redirect("product_list")
 
-        messages.success(self.request, APP_TEXT["item_deleted"])
+        messages.success(self.request, "Товар удален.")
         return response
 
 
@@ -150,7 +160,7 @@ class OrderCreateView(AdminRequiredMixin, CreateView):
     success_url = reverse_lazy("order_list")
 
     def form_valid(self, form):
-        messages.success(self.request, APP_TEXT["order_added"])
+        messages.success(self.request, "Заказ добавлен.")
         return super().form_valid(form)
 
 
@@ -161,7 +171,7 @@ class OrderUpdateView(AdminRequiredMixin, UpdateView):
     success_url = reverse_lazy("order_list")
 
     def form_valid(self, form):
-        messages.success(self.request, APP_TEXT["order_updated"])
+        messages.success(self.request, "Заказ обновлен.")
         return super().form_valid(form)
 
 
@@ -171,5 +181,5 @@ class OrderDeleteView(AdminRequiredMixin, DeleteView):
     success_url = reverse_lazy("order_list")
 
     def form_valid(self, form):
-        messages.success(self.request, APP_TEXT["order_deleted"])
+        messages.success(self.request, "Заказ удален.")
         return super().form_valid(form)

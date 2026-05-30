@@ -3,7 +3,7 @@
 <html lang="ru">
 <head>
     <meta charset="utf-8">
-    <title>{% block title %}{{ app_text.company_name }}{% endblock %}</title>
+    <title>{% block title %}ООО Обувь{% endblock %}</title>
     <link rel="icon" href="{% static 'images/Icon.ico' %}">
     <link rel="stylesheet" href="{% static 'css/style.css' %}">
 </head>
@@ -11,13 +11,13 @@
     <header>
         <a class="brand" href="{% url 'product_list' %}">
             <img src="{% static 'images/Icon.png' %}" alt="Логотип">
-            <span>{{ app_text.company_name }}</span>
+            <span>ООО Обувь</span>
         </a>
 
         <nav>
-            <a href="{% url 'product_list' %}">{{ app_text.catalog_menu }}</a>
+            <a href="{% url 'product_list' %}">Товары</a>
             {% if can_open_orders_menu %}
-                <a href="{% url 'order_list' %}">{{ app_text.orders_menu }}</a>
+                <a href="{% url 'order_list' %}">Заказы</a>
             {% endif %}
         </nav>
 
