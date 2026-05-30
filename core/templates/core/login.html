@@ -1,0 +1,17 @@
+{% extends "core/base.html" %}
+
+{% block title %}Вход{% endblock %}
+
+{% block content %}
+<section class="login-page">
+    <h1>Вход</h1>
+
+    <form class="login-form" method="post">
+        {% csrf_token %}
+        {{ form.as_p }}
+        <button type="submit">Войти</button>
+    </form>
+
+    <a class="guest-link" href="{% url 'product_list' %}">Войти как гость</a>
+</section>
+{% endblock %}

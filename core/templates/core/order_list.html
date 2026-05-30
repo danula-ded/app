@@ -1,0 +1,57 @@
+{% extends "core/base.html" %}
+
+{% block title %}{{ app_text.orders_title }}{% endblock %}
+
+{% block content %}
+<div class="page-title">
+    <h1>{{ app_text.orders_title }}</h1>
+
+    {% if can_manage_orders %}
+        <a class="button" href="{% url 'order_add' %}">{{ app_text.add_order }}</a>
+    {% endif %}
+</div>
+
+<table>
+    <thead>
+        <tr>
+            <th>ID</th>
+            <th>{{ app_text.order_items_header }}</th>
+            <th>{{ app_text.order_date }}</th>
+            <th>{{ app_text.order_delivery_date }}</th>
+            <th>Пункт выдачи</th>
+            <th>Код</th>
+            <th>Статус</th>
+            {% if can_manage_orders %}
+                <th>Действия</th>
+            {% endif %}
+        </tr>
+    </thead>
+    <tbody>
+        {% for order in orders %}
+            <tr>
+                <td>{{ order.id }}</td>
+                <td>
+                    {% for item in order.items.all %}
+                        {{ item.product.article }} x {{ item.count }}{% if not forloop.last %}, {% endif %}
+                    {% endfor %}
+                </td>
+                <td>{{ order.order_date }}</td>
+                <td>{{ order.delivery_date }}</td>
+                <td>{{ order.pickup_point }}</td>
+                <td>{{ order.pickup_code }}</td>
+                <td>{{ order.status }}</td>
+                {% if can_manage_orders %}
+                    <td>
+                        <a class="button" href="{% url 'order_edit' order.id %}">Редактировать</a>
+                        <a class="button danger" href="{% url 'order_delete' order.id %}">Удалить</a>
+                    </td>
+                {% endif %}
+            </tr>
+        {% empty %}
+            <tr>
+                <td colspan="8">{{ app_text.order_empty }}</td>
+            </tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% endblock %}

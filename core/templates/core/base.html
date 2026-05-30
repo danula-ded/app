@@ -1,0 +1,50 @@
+{% load static %}
+<!doctype html>
+<html lang="ru">
+<head>
+    <meta charset="utf-8">
+    <title>{% block title %}{{ app_text.company_name }}{% endblock %}</title>
+    <link rel="icon" href="{% static 'images/Icon.ico' %}">
+    <link rel="stylesheet" href="{% static 'css/style.css' %}">
+</head>
+<body>
+    <header>
+        <a class="brand" href="{% url 'product_list' %}">
+            <img src="{% static 'images/Icon.png' %}" alt="Логотип">
+            <span>{{ app_text.company_name }}</span>
+        </a>
+
+        <nav>
+            <a href="{% url 'product_list' %}">{{ app_text.catalog_menu }}</a>
+            {% if can_open_orders_menu %}
+                <a href="{% url 'order_list' %}">{{ app_text.orders_menu }}</a>
+            {% endif %}
+        </nav>
+
+        <div class="user-box">
+            {% if user.is_authenticated %}
+                <span>{{ user.last_name }} {{ user.first_name }} {{ user.patronymic }}</span>
+                <form action="{% url 'logout' %}" method="post">
+                    {% csrf_token %}
+                    <button type="submit">Выйти</button>
+                </form>
+            {% else %}
+                <span>Гость</span>
+                <a class="button" href="{% url 'login' %}">Войти</a>
+            {% endif %}
+        </div>
+    </header>
+
+    <main>
+        {% if messages %}
+            <div class="messages">
+                {% for message in messages %}
+                    <div class="message {{ message.tags }}">{{ message }}</div>
+                {% endfor %}
+            </div>
+        {% endif %}
+
+        {% block content %}{% endblock %}
+    </main>
+</body>
+</html>

@@ -1,0 +1,16 @@
+{% extends "core/base.html" %}
+
+{% block title %}{{ app_text.delete_item }}{% endblock %}
+
+{% block content %}
+<h1>{{ app_text.delete_item }}</h1>
+
+<p>{{ app_text.delete_item_question }} "{{ object.name }}"?</p>
+<p>{{ app_text.delete_item_warning }}</p>
+
+<form method="post">
+    {% csrf_token %}
+    <button class="danger" type="submit">Удалить</button>
+    <a class="button" href="{% url 'product_list' %}">Отмена</a>
+</form>
+{% endblock %}

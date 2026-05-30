@@ -1,0 +1,24 @@
+{% extends "core/base.html" %}
+
+{% block title %}{% if object %}{{ app_text.edit_order }}{% else %}{{ app_text.add_order }}{% endif %}{% endblock %}
+
+{% block content %}
+<div class="page-title">
+    <h1>{% if object %}{{ app_text.edit_order }}{% else %}{{ app_text.add_order }}{% endif %}</h1>
+    <a class="button" href="{% url 'order_list' %}">Назад</a>
+</div>
+
+{% if object %}
+    <p><b>{{ app_text.order_id }}:</b> {{ object.id }}</p>
+{% endif %}
+
+<form class="form-page" method="post">
+    {% csrf_token %}
+    {{ form.as_p }}
+
+    <div class="actions">
+        <button type="submit">Сохранить</button>
+        <a class="button" href="{% url 'order_list' %}">Отмена</a>
+    </div>
+</form>
+{% endblock %}

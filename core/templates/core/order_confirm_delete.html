@@ -1,0 +1,15 @@
+{% extends "core/base.html" %}
+
+{% block title %}{{ app_text.delete_order }}{% endblock %}
+
+{% block content %}
+<h1>{{ app_text.delete_order }}</h1>
+
+<p>{{ app_text.delete_order_question }} №{{ object.id }}?</p>
+
+<form method="post">
+    {% csrf_token %}
+    <button class="danger" type="submit">Удалить</button>
+    <a class="button" href="{% url 'order_list' %}">Отмена</a>
+</form>
+{% endblock %}
