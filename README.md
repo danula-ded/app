@@ -134,11 +134,7 @@ core/templates/core/
 ## Документы
 
 ```text
-docs/module_2_algorithm.md
-docs/module_2_algorithm_gost.pdf
-docs/universal_development_algorithm.md
-docs/universal_development_algorithm_gost.pdf
-docs/algorithm_blocks_for_copy.txt
+docs/how_to_make_gost_algorithm.md
 docs/adapt_to_new_theme.md
 docs/exam_action_sequence.md
 docs/simple_import_data_guide.md
@@ -147,6 +143,6 @@ docs/git_history_plan.md
 docs/windows_commands.md
 ```
 
-PDF нужен для требования: блок-схема алгоритма по ГОСТ 19.701-90.
+Готовый PDF с алгоритмом здесь специально не хранится: его лучше собрать на экзамене по `docs/how_to_make_gost_algorithm.md` и экспортировать в PDF.
 
 SQL-скрипт БД и ER-диаграмму удобнее делать через DBeaver из уже созданной PostgreSQL-базы.

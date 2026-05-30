@@ -172,18 +172,11 @@ http://127.0.0.1:8000/
 ```text
 исходный код проекта
 uv.lock или requirements.txt
-docs/universal_development_algorithm_gost.pdf
-docs/algorithm_blocks_for_copy.txt
+docs/how_to_make_gost_algorithm.md
 docs/debug_report.docx или скриншоты
 ```
 
-SQL-скрипт и ER-диаграмму делай через DBeaver после `migrate` и `import_data`.
-
-Если нужно быстро перенести алгоритм в другой документ, копируй текст из:
-
-```text
-docs/algorithm_blocks_for_copy.txt
-```
+SQL-скрипт, ER-диаграмму и PDF с блок-схемой делай отдельно на экзамене: SQL/ER через DBeaver, блок-схему по инструкции `docs/how_to_make_gost_algorithm.md`.
 
 ## 11. Git
 
