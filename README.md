@@ -138,6 +138,7 @@ docs/module_2_algorithm.md
 docs/module_2_algorithm_gost.pdf
 docs/universal_development_algorithm.md
 docs/universal_development_algorithm_gost.pdf
+docs/algorithm_blocks_for_copy.txt
 docs/adapt_to_new_theme.md
 docs/exam_action_sequence.md
 docs/simple_import_data_guide.md
