@@ -25,6 +25,15 @@ TEXT_EXTENSIONS = {
     ".sql",
 }
 
+ASSET_EXTENSIONS = {
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".webp",
+    ".gif",
+    ".ico",
+}
+
 PROJECT_FILES = [
     "core/models.py",
     "core/forms.py",
@@ -45,6 +54,12 @@ PROJECT_FOLDERS = [
 ]
 
 ALLOWED_PATHS = PROJECT_FILES + PROJECT_FOLDERS
+
+ALLOWED_ASSET_TARGETS = [
+    "static/images",
+    "media/products",
+    "core/import",
+]
 
 
 def load_local_config():
@@ -117,6 +132,8 @@ def read_known_file(path):
     try:
         if suffix in TEXT_EXTENSIONS:
             return read_text(path)
+        if suffix in ASSET_EXTENSIONS:
+            return f"Изображение. Имя файла: {path.name}. Размер: {path.stat().st_size} байт. Содержимое картинки не анализируется."
         if suffix in (".xlsx", ".xlsm"):
             return read_xlsx(path)
         if suffix == ".docx":
@@ -191,12 +208,16 @@ def build_plan_prompt(context):
 
 def build_apply_prompt(context):
     allowed = "\n".join(f"- {path}" for path in ALLOWED_PATHS)
+    asset_targets = "\n".join(f"- {path}" for path in ALLOWED_ASSET_TARGETS)
     return f"""
 Ты помогаешь адаптировать простой Django-проект под новое экзаменационное задание.
 Нужно изменить проект минимально, без сложных абстракций, чтобы он соответствовал заданию и оставался понятным новичку.
 
 Разрешено переписывать только эти файлы и папки:
 {allowed}
+
+Картинки из tools/input можно копировать только в эти папки:
+{asset_targets}
 
 Не создавай миграции. Пользователь сам выполнит makemigrations и migrate.
 Не добавляй комментарии в код без необходимости.
@@ -214,10 +235,18 @@ def build_apply_prompt(context):
       "path": "core/models.py",
       "content": "полный новый текст файла"
     }}
+  ],
+  "assets": [
+    {{
+      "source": "images/logo.png",
+      "target": "static/images/logo.png"
+    }}
   ]
 }}
 
 В files включай только те файлы, которые реально надо заменить. Каждый content должен быть полным содержимым файла.
+В assets включай только картинки, которые нужно скопировать из tools/input в проект. source - путь относительно tools/input. target - путь относительно корня Django-проекта.
+Если картинки не нужны, верни пустой список assets.
 
 {context}
 """.strip()
@@ -271,6 +300,17 @@ def is_allowed(relative_path):
     return False
 
 
+def is_asset_target_allowed(relative_path):
+    normalized = Path(relative_path).as_posix().lstrip("/")
+    if ".." in Path(normalized).parts:
+        return False
+    for allowed in ALLOWED_ASSET_TARGETS:
+        allowed = Path(allowed).as_posix().rstrip("/")
+        if normalized.startswith(f"{allowed}/"):
+            return True
+    return False
+
+
 def write_files(data):
     timestamp = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
     backup_root = BACKUP_DIR / timestamp
@@ -293,6 +333,42 @@ def write_files(data):
         target.write_text(content, encoding="utf-8")
         changed.append(path_name)
     return changed, backup_root
+
+
+def validate_assets(data):
+    assets = []
+    for item in data.get("assets", []):
+        source_name = item.get("source", "")
+        target_name = item.get("target", "")
+        if not source_name or not target_name:
+            continue
+        source = (INPUT_DIR / source_name).resolve()
+        target = (PROJECT_ROOT / target_name).resolve()
+        if INPUT_DIR.resolve() not in source.parents:
+            raise ValueError(f"Путь картинки вышел за пределы input: {source_name}")
+        if PROJECT_ROOT.resolve() not in target.parents:
+            raise ValueError(f"Путь картинки вышел за пределы проекта: {target_name}")
+        if not source.exists():
+            raise ValueError(f"Картинка не найдена в input: {source_name}")
+        if source.suffix.lower() not in ASSET_EXTENSIONS:
+            raise ValueError(f"Файл не является разрешенной картинкой: {source_name}")
+        if not is_asset_target_allowed(target_name):
+            raise ValueError(f"Запрещенный путь для картинки: {target_name}")
+        assets.append((source, target, target_name))
+    return assets
+
+
+def copy_assets(assets, backup_root):
+    copied = []
+    for source, target, target_name in assets:
+        if target.exists():
+            backup = backup_root / target_name
+            backup.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(target, backup)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, target)
+        copied.append(target_name)
+    return copied
 
 
 def save_output(name, content):
@@ -323,7 +399,9 @@ def command_apply():
     answer = call_yandex(prompt)
     save_output("last_response.md", answer)
     data = extract_json(answer)
+    assets = validate_assets(data)
     changed, backup = write_files(data)
+    copied_assets = copy_assets(assets, backup)
     report = [
         f"# Отчет AI-помощника {dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
         "",
@@ -331,6 +409,9 @@ def command_apply():
         "",
         "## Измененные файлы",
         *(f"- {path}" for path in changed),
+        "",
+        "## Скопированные картинки",
+        *(f"- {path}" for path in copied_assets),
         "",
         "## Backup",
         str(backup),
@@ -343,6 +424,7 @@ def command_apply():
     ]
     path = save_output("apply_report.md", "\n".join(report))
     print(f"Изменено файлов: {len(changed)}")
+    print(f"Скопировано картинок: {len(copied_assets)}")
     print(f"Отчет: {path}")
     print(f"Backup: {backup}")
 
