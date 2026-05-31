@@ -111,6 +111,24 @@ uv run python tool.py plan
 uv run python tool.py apply
 ```
 
+Задать один вопрос в консоли:
+
+```powershell
+uv run python tool.py ask "почему команда migrate выдает ошибку?"
+```
+
+Открыть режим живого диалога:
+
+```powershell
+uv run python tool.py chat
+```
+
+Выйти из чата:
+
+```text
+exit
+```
+
 ## Как понять, где работает AI
 
 `collect` не обращается к AI. Он только читает файлы и собирает контекст:
@@ -138,6 +156,18 @@ uv run python tool.py apply
 
 Такой режим надежнее, чем просить AI вернуть весь проект одним огромным JSON.
 
+`ask` и `chat` не меняют проект. Они только отправляют вопрос в AI и сохраняют ответ.
+
+Примеры вопросов:
+
+```text
+Куда добавить новый маршрут для страницы партнеров?
+Почему makemigrations не видит модель?
+Как проверить, что import_data заполнил таблицы?
+Что значит ошибка TemplateDoesNotExist?
+Какой файл открыть, если не работает кнопка удаления?
+```
+
 ## Результаты
 
 ```text
@@ -147,6 +177,8 @@ tools/output/apply_report.md
 tools/output/last_response.md
 tools/output/apply_manifest_response.md
 tools/output/response_core_models.py.md
+tools/output/answer_YYYYMMDD_HHMMSS.md
+tools/output/chat_log.md
 ```
 
 Перед заменой файлов скрипт делает backup:

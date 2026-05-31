@@ -293,6 +293,45 @@ def build_file_prompt(context, path_name, reason):
 """.strip()
 
 
+def collect_output_notes():
+    parts = []
+    for name in ("plan.md", "apply_report.md", "apply_manifest_response.md"):
+        path = OUTPUT_DIR / name
+        if path.exists():
+            parts.append(f"\n\n===== ФАЙЛ OUTPUT: {name} =====")
+            parts.append(read_text(path)[:20000])
+    return "\n".join(parts) or "Файлов с предыдущими ответами пока нет."
+
+
+def build_question_prompt(context, question, history):
+    history_text = "\n".join(history[-8:]) if history else "Истории диалога пока нет."
+    notes = collect_output_notes()
+    return f"""
+Ты отвечаешь на вопросы по простому Django-проекту для экзамена.
+Отвечай по-русски, коротко и практически.
+
+Правила ответа:
+- сначала дай прямой ответ;
+- если нужно действие, дай шаги;
+- если нужен код, покажи только нужный небольшой фрагмент;
+- называй конкретные файлы проекта;
+- если вопрос про ошибку, объясни причину и что проверить первым;
+- не переписывай весь проект без просьбы.
+
+Контекст задания и проекта:
+{context}
+
+Предыдущие ответы инструмента:
+{notes}
+
+История текущего чата:
+{history_text}
+
+Вопрос пользователя:
+{question}
+""".strip()
+
+
 def call_yandex(prompt):
     from yandex_ai_studio_sdk import AIStudio
 
@@ -465,6 +504,17 @@ def save_output(name, content):
     return path
 
 
+def save_answer(question, answer):
+    timestamp = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
+    text = f"# Вопрос\n\n{question}\n\n# Ответ\n\n{answer}\n"
+    path = save_output(f"answer_{timestamp}.md", text)
+    chat_log = OUTPUT_DIR / "chat_log.md"
+    with chat_log.open("a", encoding="utf-8") as file:
+        file.write(f"\n\n## {dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n")
+        file.write(text)
+    return path
+
+
 def command_collect():
     log("Собираю контекст из input и файлов проекта...", 10)
     context = build_context()
@@ -539,10 +589,46 @@ def command_test():
     print(answer.strip())
 
 
+def command_ask(question):
+    if not question:
+        raise ValueError('Напиши вопрос после команды, например: uv run python tool.py ask "почему migrate падает?"')
+    log("Собираю контекст для вопроса...", 10)
+    context = build_context()
+    log("Отправляю вопрос в AI...", 50)
+    answer = call_yandex(build_question_prompt(context, question, []))
+    path = save_answer(question, answer)
+    log("Ответ получен.", 100)
+    print()
+    print(answer.strip())
+    print()
+    print(f"Ответ сохранен: {path}")
+
+
+def command_chat():
+    log("Собираю контекст для чата...", 10)
+    context = build_context()
+    history = []
+    log("Чат готов. Напиши вопрос или exit для выхода.", 100)
+    while True:
+        question = input("\nТы> ").strip()
+        if question.lower() in ("exit", "quit", "выход"):
+            print("Чат завершен.")
+            return
+        if not question:
+            continue
+        log("AI думает...", 50)
+        answer = call_yandex(build_question_prompt(context, question, history))
+        history.append(f"Пользователь: {question}")
+        history.append(f"AI: {answer}")
+        save_answer(question, answer)
+        print(f"\nAI> {answer.strip()}")
+
+
 def main():
     ensure_dirs()
     parser = argparse.ArgumentParser()
-    parser.add_argument("command", choices=["collect", "test", "plan", "apply"])
+    parser.add_argument("command", choices=["collect", "test", "plan", "apply", "ask", "chat"])
+    parser.add_argument("question", nargs=argparse.REMAINDER)
     args = parser.parse_args()
 
     commands = {
@@ -550,6 +636,8 @@ def main():
         "test": command_test,
         "plan": command_plan,
         "apply": command_apply,
+        "ask": lambda: command_ask(" ".join(args.question).strip()),
+        "chat": command_chat,
     }
     try:
         commands[args.command]()
