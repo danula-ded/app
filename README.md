@@ -117,7 +117,9 @@ core/templates/core/
 
 ```text
 docs/how_to_make_gost_algorithm.md
+docs/analyze_new_assignment.md
 docs/adapt_to_new_theme.md
+docs/variant_2025_comparison.md
 docs/exam_action_sequence.md
 docs/simple_import_data_guide.md
 docs/debug_report_checklist.md
