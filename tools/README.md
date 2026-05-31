@@ -86,6 +86,14 @@ tools/input/images/
 
 Скрипт читает `input` рекурсивно, поэтому вложенность не мешает.
 
+Excel/CSV для импорта можно оставлять в `tools/input` или во вложенной папке вроде `tools/input/Ресурсы`. Во время `apply` скрипт сам скопирует все `.xlsx`, `.xlsm` и `.csv` в проект:
+
+```text
+core/import/
+```
+
+Поэтому `import_data.py` должен читать файлы из `core/import`, а не из `tools/input` и не из папки `Ресурсы`.
+
 Картинки тоже можно класть в `tools/input/`, например `.png`, `.jpg`, `.jpeg`, `.webp`, `.gif`, `.ico`.
 Модель не видит содержимое картинки как человек, но видит имя файла и может попросить скрипт скопировать картинку в проект.
 
@@ -141,7 +149,41 @@ uv run python tool.py test
 uv run python tool.py plan
 ```
 
-Применить изменения к разрешенным файлам проекта:
+Сгенерировать только модели, admin.py и импорт:
+
+```powershell
+uv run python tool.py schema
+```
+
+После `schema` обычно запускают:
+
+```powershell
+cd ..
+uv run python manage.py makemigrations
+uv run python manage.py migrate
+uv run python manage.py import_data
+cd tools
+```
+
+Сгенерировать интерфейс после готовой схемы:
+
+```powershell
+uv run python tool.py interface
+```
+
+Проверить соответствие проекта заданию без изменения файлов:
+
+```powershell
+uv run python tool.py audit
+```
+
+Можно проверить конкретное условие:
+
+```powershell
+uv run python tool.py audit "проверь, есть ли поиск, фильтрация, сортировка и CRUD"
+```
+
+Старый режим "сделать все сразу":
 
 ```powershell
 uv run python tool.py apply
@@ -177,11 +219,19 @@ uv run python tool.py restore 20260531_145542
 uv run python tool.py check
 ```
 
-Эта команда проверяет синтаксис основных Python-файлов и запускает:
+Эта команда проверяет синтаксис основных Python-файлов, компиляцию шаблонов и запускает:
 
 ```powershell
 uv run python manage.py check
 ```
+
+Проверить страницы после миграций и импорта данных:
+
+```powershell
+uv run python tool.py test_pages
+```
+
+Эту команду запускай только после `makemigrations`, `migrate` и `import_data`, потому что страницы часто обращаются к таблицам базы данных.
 
 Попробовать автоматически исправить ошибку после проверки:
 
@@ -208,6 +258,32 @@ exit
 
 `plan` обращается к AI один раз и сохраняет текстовый план в `tools/output/plan.md`.
 
+`schema` обращается к AI и меняет только:
+
+```text
+core/models.py
+core/admin.py
+core/management/commands/import_data.py
+```
+
+Он не трогает `settings.py`, `views.py`, `forms.py`, `urls.py` и шаблоны. Excel/CSV копируются в `core/import`.
+
+`interface` обращается к AI и меняет только интерфейсные файлы:
+
+```text
+core/forms.py
+core/views.py
+config/urls.py
+core/templates/core/
+static/css/style.css
+core/permissions.py
+core/context_processors.py
+```
+
+Он берет текущий `core/models.py` как источник правды и не трогает `config/settings.py`.
+
+`audit` обращается к AI, но не меняет проект. Он проверяет соответствие кода заданию и пишет, чего не хватает.
+
 `apply` работает в несколько шагов:
 
 ```text
@@ -222,7 +298,8 @@ exit
 [82%] проверяет согласованность urls/views/templates/forms/models/import_data до записи
 [85%] записывает файлы и создает backup
 [92%] копирует картинки
-[93%] запускает uv run python manage.py check
+[92%] копирует Excel/CSV из tools/input в core/import
+[93%] запускает py_compile, manage.py check и компиляцию шаблонов
 [94%] если проверка упала, пытается исправить проект
 [100%] готово
 ```
@@ -235,11 +312,20 @@ exit
 config/urls.py импортирует view, которого нет в core/views.py
 views/forms/admin/import_data импортируют модель или форму, которой нет
 core/views.py ссылается на шаблон, которого нет
+config/urls.py потерял admin/ или главную страницу
 HTML-шаблон использует url name, которого нет в config/urls.py
 HTML-шаблон расширяет base.html вместо core/base.html
+HTML-шаблон использует static без load static
+HTML-шаблон содержит POST-форму без csrf_token
+HTML-шаблон содержит markdown-строки ```html
+list-страница потеряла поиск, фильтр или сортировку
 forms.py использует поле, которого нет в models.py
 import_data.py пишет поле, которого нет в models.py
+import_data.py читает Excel/CSV из неправильной папки
+import_data.py вызывает get_or_create без обязательных полей
 ```
+
+`config/settings.py` теперь считается ручной настройкой. Инструмент читает его как контекст, но не переписывает. Базу данных, `AUTH_USER_MODEL`, `LOGIN_REDIRECT_URL` и другие базовые настройки лучше поправлять руками.
 
 Blueprint сохраняется здесь:
 
@@ -256,9 +342,16 @@ tools/output/blueprint.md
 
 `restore` не обращается к AI. Он возвращает файлы проекта из `tools/backups`.
 
-`check` не обращается к AI. Он запускает проверку Django и сохраняет вывод.
+`check` не обращается к AI. Он запускает проверку Django без открытия страниц и сохраняет вывод.
+
+`test_pages` запускается после миграций и импорта данных. Он проверяет проект, открывает доступные страницы через Django test client и, если проверка упала, пытается исправить код через AI.
+Если таблицы базы еще не созданы, `test_pages` не запускает исправление, а просит сначала выполнить миграции и импорт.
 
 `repair` обращается к AI только если проверка Django упала. Он передает ошибку, просит исправить минимальный набор файлов и снова запускает проверку.
+
+`apply`, `repair` и исправление согласованности делают до 5 попыток. При каждой новой попытке AI получает текущие уже сгенерированные или записанные файлы и текст последней ошибки.
+
+Проверка страниц вынесена из `apply`, чтобы сначала можно было спокойно создать миграции, применить их и наполнить базу.
 
 Примеры вопросов:
 
@@ -351,7 +444,11 @@ uv run python tool.py chat
 uv run python tool.py collect
 uv run python tool.py test
 uv run python tool.py plan
+uv run python tool.py schema
+uv run python tool.py interface
+uv run python tool.py audit
 uv run python tool.py apply
+uv run python tool.py test_pages
 
 ----
 
@@ -359,10 +456,12 @@ uv run python tool.py apply
 
 ```powershell
 cd ..
-uv run python manage.py check
 uv run python manage.py makemigrations
 uv run python manage.py migrate
 uv run python manage.py import_data
+cd tools
+uv run python tool.py test_pages
+cd ..
 uv run python manage.py runserver
 ```
 

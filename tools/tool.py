@@ -46,6 +46,12 @@ ASSET_EXTENSIONS = {
     ".ico",
 }
 
+IMPORT_EXTENSIONS = {
+    ".xlsx",
+    ".xlsm",
+    ".csv",
+}
+
 GENERATION_ORDER = [
     "core/models.py",
     "core/forms.py",
@@ -94,7 +100,6 @@ PROJECT_FILES = [
     "core/permissions.py",
     "core/context_processors.py",
     "core/management/commands/import_data.py",
-    "config/settings.py",
     "config/urls.py",
     "static/css/style.css",
 ]
@@ -104,6 +109,23 @@ PROJECT_FOLDERS = [
 ]
 
 ALLOWED_PATHS = PROJECT_FILES + PROJECT_FOLDERS
+
+SCHEMA_STAGE_FILES = [
+    "core/models.py",
+    "core/admin.py",
+    "core/management/commands/import_data.py",
+]
+
+INTERFACE_STAGE_BASE_FILES = [
+    "core/forms.py",
+    "core/views.py",
+    "config/urls.py",
+    "core/permissions.py",
+    "core/context_processors.py",
+    "core/templates/core/base.html",
+    "core/templates/core/login.html",
+    "static/css/style.css",
+]
 
 BLOCKED_GENERATED_SUFFIXES = {".md"}
 BLOCKED_GENERATED_PREFIXES = ("docs/",)
@@ -142,6 +164,10 @@ ALLOWED_ASSET_TARGETS = [
     "media/products",
     "core/import",
 ]
+
+IMPORT_TARGET_DIR = "core/import"
+MAX_REPAIR_ATTEMPTS = 5
+MAX_FILE_GENERATION_ATTEMPTS = 5
 
 ASSET_TARGET_REPLACEMENTS = {
     "static/icons": "static/images",
@@ -318,6 +344,23 @@ def collect_excel_file_info():
     return result
 
 
+def collect_import_resource_targets():
+    files = sorted(
+        path
+        for path in INPUT_DIR.rglob("*")
+        if path.is_file() and path.suffix.lower() in IMPORT_EXTENSIONS
+    )
+    if not files:
+        return "Файлы Excel/CSV для импорта не найдены."
+
+    parts = [
+        "Файлы Excel/CSV будут автоматически скопированы в проект перед проверкой:",
+    ]
+    for path in files:
+        parts.append(f"- {path.relative_to(INPUT_DIR).as_posix()} -> {IMPORT_TARGET_DIR}/{path.name}")
+    return "\n".join(parts)
+
+
 def read_docx(path):
     from docx import Document
 
@@ -450,6 +493,8 @@ def build_blueprint_prompt(assignment_context):
 Excel-файлы являются главным источником сущностей, полей и связей.
 Создавай только те сущности, страницы и импорты, которые нужны по заданию.
 Не создавай CRUD для справочников, если задание явно этого не требует.
+Главная list-страница должна быть полноценной: поиск по текстовым полям, фильтр по справочнику или статусу, сортировка через GET-параметры.
+CRUD-страницы не должны заменять список. Список, добавление, редактирование, просмотр деталей/истории должны быть отдельными страницами, если они есть в задании.
 Технические имена классов, функций, url_name и файлов пиши латиницей.
 Все видимые пользователю тексты интерфейса, сообщения и заголовки пиши на русском.
 Assets клади только в static/images, media/products или core/import. Не используй static/icons.
@@ -477,8 +522,8 @@ Assets клади только в static/images, media/products или core/impo
       "url_name": "partner_list",
       "path": "partners/",
       "view": "PartnerListView",
-      "template": "core/partner_list.html",
-      "purpose": "список партнеров"
+      "template": "core/templates/core/partner_list.html",
+      "purpose": "список партнеров с поиском, фильтром и сортировкой"
     }}
   ],
   "forms": [
@@ -597,6 +642,8 @@ def build_generation_context(blueprint):
             blueprint,
             "\n# ЗАДАНИЕ И EXCEL",
             collect_assignment(),
+            "\n# КУДА БУДУТ СКОПИРОВАНЫ ФАЙЛЫ ДЛЯ ИМПОРТА",
+            collect_import_resource_targets(),
             "\n# ОБОЛОЧКА ТЕКУЩЕГО DJANGO-ПРОЕКТА",
             collect_project_shell(),
         ]
@@ -663,6 +710,12 @@ def build_file_context(base_context, generated_files, path_name, extra_notes="")
                 "Если модель/поле не описаны в core/models.py ниже, не используй их.",
                 "Не импортируй пользователей, заказы, пункты выдачи или старые товары, если таких Excel-файлов нет в новом задании.",
                 collect_excel_overview(),
+                "\n# ФАЙЛЫ ДЛЯ ИМПОРТА",
+                collect_import_resource_targets(),
+                "В import_data.py читай Excel/CSV только из папки core/import через settings.BASE_DIR или Path(__file__).resolve().parents. Не используй пути вида 'Ресурсы/...'.",
+                "Пример пути: Path(settings.BASE_DIR) / 'core' / 'import' / 'Partners_import.xlsx'.",
+                "Если запись уже должна существовать из предыдущего файла, используй get(), а не get_or_create() с неполными обязательными полями.",
+                "Порядок импорта: сначала справочники, потом основные сущности, потом таблицы связей/истории.",
                 "\n# СГЕНЕРИРОВАННЫЙ core/models.py",
                 models,
                 "\n# ОШИБКИ/ЗАМЕТКИ",
@@ -688,6 +741,9 @@ def build_file_context(base_context, generated_files, path_name, extra_notes="")
                 "# КОМПАКТНЫЙ КОНТЕКСТ ДЛЯ VIEWS",
                 "Не сохраняй старые view из шаблона, если они не требуются новым заданием.",
                 "Создавай только view, перечисленные в BLUEPRINT. Не создавай страницы справочников на всякий случай.",
+                "Главная ListView не должна быть пустой. В ней нужен get_queryset() с поиском, фильтрацией и сортировкой через request.GET.",
+                "Для поиска используй Q по главным текстовым полям. Для фильтра используй внешний ключ/тип/статус, если такая связь есть. Для сортировки используй белый список разрешенных полей.",
+                "Сохраняй все страницы из BLUEPRINT: список, добавление, редактирование, просмотр, историю. Не удаляй функциональность ради упрощения.",
                 base_context.split("# ОБОЛОЧКА ТЕКУЩЕГО DJANGO-ПРОЕКТА", 1)[0],
                 "\n# СГЕНЕРИРОВАННЫЙ core/models.py",
                 models,
@@ -705,6 +761,8 @@ def build_file_context(base_context, generated_files, path_name, extra_notes="")
             [
                 "# КОМПАКТНЫЙ КОНТЕКСТ ДЛЯ URLS",
                 "Импортируй только те view, которые реально есть в core/views.py.",
+                "Сохрани маршрут path('admin/', admin.site.urls), если django.contrib.admin есть в INSTALLED_APPS.",
+                "Добавь главную страницу '' на основной list-view, чтобы корень сайта открывался.",
                 "Добавь login/logout, если base.html или login.html их используют.",
                 "Не удаляй url names, которые уже используют сгенерированные шаблоны.",
                 "\n# URL NAMES ИЗ СГЕНЕРИРОВАННЫХ ШАБЛОНОВ",
@@ -721,8 +779,13 @@ def build_file_context(base_context, generated_files, path_name, extra_notes="")
         return "\n".join(
             [
                 "# КОМПАКТНЫЙ КОНТЕКСТ ДЛЯ HTML",
-                "Используй только url name из config/urls.py.",
+                "Не добавляй markdown-ограждения ```html и ``` в файл. Верни чистый Django HTML.",
+                "Если в шаблоне есть {% static ... %}, в начале файла обязательно должна быть строка {% load static %}.",
+                "Используй только url name из config/urls.py или BLUEPRINT проекта.",
                 "Шаблоны Django должны расширять {% extends \"core/base.html\" %}, если это не сам base.html.",
+                "Формы изменения данных всегда должны содержать {% csrf_token %}.",
+                "List-шаблон должен содержать GET-форму с поиском, фильтром и сортировкой, если это страница списка.",
+                "Не убирай кнопки добавления, редактирования, просмотра деталей/истории, если такие маршруты есть в BLUEPRINT или urls.py.",
                 base_context.split("# ОБОЛОЧКА ТЕКУЩЕГО DJANGO-ПРОЕКТА", 1)[0],
                 "\n# СГЕНЕРИРОВАННЫЙ config/urls.py",
                 urls,
@@ -796,6 +859,9 @@ def build_apply_prompt(context):
 Картинки из tools/input можно копировать только в эти папки:
 {asset_targets}
 
+Excel/CSV из tools/input не указывай в assets. Скрипт сам скопирует все .xlsx, .xlsm и .csv в папку core/import.
+import_data.py должен читать данные только из core/import, а не из tools/input и не из папки Ресурсы.
+
 Для assets лучше указывать source как путь из контекста, например "Ресурсы/Мастер пол.ico".
 Если известен только файл, можно указать просто "Мастер пол.ico": скрипт найдет его внутри tools/input.
 Не используй static/icons. Иконки и логотипы клади в static/images.
@@ -805,14 +871,18 @@ def build_apply_prompt(context):
 Не добавляй комментарии в код вообще, кроме стандартных комментариев Django, если они уже есть в файле.
 Не меняй секреты, пароли и API-ключи.
 Не меняй DATABASES, SECRET_KEY, DEBUG, ALLOWED_HOSTS и настройки подключения к PostgreSQL.
+config/settings.py запрещен для записи. Не включай его в files. Пользователь сам настраивает БД и базовые настройки.
 Не используй сложные универсальные конфиги.
 Сохраняй стиль простого Django-кода: models, forms, views, templates, management command.
 Если новое задание меняет предметную область, замени старые сущности шаблона на новые. Не смешивай старую и новую предметные области.
 Excel-файлы из tools/input являются главным источником для моделей и импорта.
 Технические имена в коде пиши латиницей, видимые пользователю тексты интерфейса пиши на русском.
+Главная list-страница обязана иметь поиск, фильтр и сортировку через GET-параметры. Не заменяй ее пустым ListView.
+Если в задании есть CRUD, не удаляй add/update/detail/history страницы ради упрощения.
 Не создавай страницы для Supplier, Manufacturer, Category, Unit, PickupPoint, OrderStatus, Product, Order, если они не указаны в BLUEPRINT проекта.
 Обязательно включи core/templates/core/base.html, если меняешь urls.py, views.py или основные шаблоны.
 Обязательно включи core/templates/core/login.html, если в base.html или urls.py есть вход пользователя.
+config/urls.py должен сохранять admin/ и иметь главную страницу '' на основной список.
 
 Ответ верни строго в JSON без Markdown:
 {{
@@ -882,6 +952,7 @@ def build_repair_prompt(context, error_text):
 После автоматического изменения проекта команда проверки Django упала.
 Нужно выбрать минимальный список файлов, которые надо исправить.
 Не пиши полный код файлов на этом шаге.
+Текущий контекст ниже содержит уже записанные файлы после apply и предыдущих исправлений. Исправляй именно текущие файлы, не возвращай старую предметную область шаблона.
 
 Разрешено переписывать только эти файлы и папки:
 {allowed}
@@ -893,6 +964,13 @@ def build_repair_prompt(context, error_text):
 - если view использует template_name, такой шаблон обязан быть создан;
 - если форма использует модель и поля, они обязаны существовать в models.py;
 - если import_data.py записывает поля модели, эти поля обязаны существовать;
+- если ошибка связана с шаблоном Django, убери markdown-ограждения ```html/``` и проверь {{% load static %}};
+- если шаблон использует {{% static %}}, в нем должен быть {{% load static %}};
+- если шаблон содержит POST-форму, в нем должен быть {{% csrf_token %}};
+- если исправляешь import_data.py, Excel/CSV читай только из core/import через BASE_DIR, без путей "Ресурсы/..." и "tools/input/...";
+- если исправляешь get_or_create для связанной записи, не создавай объект с неполными обязательными полями, используй get() после импорта справочников;
+- config/settings.py запрещен для записи. Не включай его в files. Пользователь сам настраивает БД и базовые настройки;
+- если core/views.py содержит list-страницу без поиска/фильтрации/сортировки, исправь views.py и list-шаблон;
 - не создавай миграции;
 - не меняй секреты и API-ключи;
 - не меняй DATABASES, SECRET_KEY, DEBUG, ALLOWED_HOSTS и настройки подключения к PostgreSQL;
@@ -938,18 +1016,28 @@ def build_file_prompt(context, path_name, reason):
 - не создавай миграции;
 - не меняй API-ключи и пароли;
 - не меняй настройки подключения к базе данных;
+- не меняй config/settings.py;
 - не добавляй комментарии без необходимости;
 - не добавляй комментарии в код вообще;
 - используй уже сгенерированные файлы из контекста как источник правды;
 - технические имена классов, функций, переменных, url_name и файлов пиши латиницей;
 - видимые пользователю заголовки, кнопки и сообщения пиши на русском;
 - если пишешь config/urls.py, импортируй только те view-классы или функции, которые реально есть в core/views.py;
+- если пишешь config/urls.py, сохрани admin/ и добавь главную страницу '' на основной list-view;
 - если пишешь core/views.py, template_name должен ссылаться на реально существующий или генерируемый шаблон;
+- если пишешь core/views.py и это ListView, обязательно реализуй get_queryset() с поиском, фильтрацией и сортировкой через GET;
 - если пишешь core/forms.py, поля формы должны существовать в модели из core/models.py;
 - если пишешь import_data.py, не записывай поля, которых нет в моделях;
-- если пишешь import_data.py, используй только Excel-файлы из текущего задания и делай файл максимально коротким;
+- если пишешь import_data.py, используй только Excel/CSV-файлы из текущего задания, которые будут лежать в core/import;
+- если пишешь import_data.py, не используй пути вида "Ресурсы/file.xlsx", "tools/input/file.xlsx" и абсолютные пути;
+- если пишешь import_data.py, для связей используй уже импортированные объекты через get(), а не get_or_create() с неполными обязательными полями;
+- если пишешь import_data.py, делай файл идемпотентным через update_or_create/get_or_create и правильный порядок импорта;
 - не смешивай старые сущности шаблона с новой предметной областью;
 - если это HTML, верни полный HTML-шаблон;
+- если это HTML, не добавляй строки ```html и ```;
+- если это HTML list-страницы, добавь GET-форму поиска, фильтра и сортировки;
+- если это HTML и используется {{% static %}}, добавь {{% load static %}} в начало файла;
+- если это HTML с form method="post", обязательно добавь {{% csrf_token %}};
 - если это Python, верни полный Python-файл.
 
 Ответ верни строго в таком формате без Markdown:
@@ -1013,6 +1101,12 @@ def build_consistency_repair_prompt(context, errors):
 - если шаблон использует неизвестный url name, исправь шаблон или urls.py;
 - если форма использует поля, которых нет в модели, исправь форму или модель;
 - если import_data.py пишет в поля, которых нет в модели, исправь import_data.py или модель;
+- если HTML содержит ```html/```, убери эти строки;
+- если HTML использует {{% static %}}, добавь {{% load static %}};
+- если HTML содержит POST-форму, добавь {{% csrf_token %}};
+- если import_data.py читает Excel/CSV из Ресурсы или tools/input, перепиши путь на core/import через BASE_DIR;
+- если get_or_create создает связанную запись без обязательных полей, используй get() после импорта справочника;
+- если list-страница стала пустым ListView без поиска/фильтрации/сортировки, исправь views.py и HTML-шаблон списка;
 - в files указывай только конкретные файлы, не папки;
 - не меняй DATABASES, SECRET_KEY, DEBUG, ALLOWED_HOSTS и настройки PostgreSQL.
 
@@ -1164,6 +1258,36 @@ def build_question_prompt(context, question, history):
 """.strip()
 
 
+def build_audit_prompt(context, condition):
+    condition_text = condition or "Проверь весь проект на соответствие заданию и типовым требованиям экзамена."
+    return f"""
+Ты проверяешь Django-проект для экзамена по выданному заданию.
+Нужно не писать код, а провести строгий аудит соответствия.
+
+Проверяемое условие:
+{condition_text}
+
+Проверь:
+1. модели и связи по Excel/заданию;
+2. 3НФ и отсутствие лишнего дублирования;
+3. импорт данных, идемпотентность, правильные внешние ключи;
+4. список: поиск, фильтр, сортировка, пагинация если требуется;
+5. CRUD: добавление, редактирование, просмотр, удаление если требуется;
+6. url names и все страницы из задания;
+7. формы, CSRF, ограничения доступа по ролям;
+8. изображения, media/static, Pillow если требуется;
+9. команды запуска, миграции и импорт.
+
+Ответ дай по-русски:
+- сначала вердикт: готово/частично/не готово;
+- затем таблицу "требование - статус - где смотреть - что исправить";
+- в конце короткий список действий по приоритету.
+
+Контекст задания и проекта:
+{context}
+""".strip()
+
+
 def call_yandex(prompt):
     from yandex_ai_studio_sdk import AIStudio
 
@@ -1281,12 +1405,33 @@ def remove_css_comments(content):
     return re.sub(r"/\*.*?\*/", "", content, flags=re.DOTALL).strip() + "\n"
 
 
+def strip_markdown_fence(content):
+    text = content.strip()
+    match = re.fullmatch(r"```(?:python|html|css|text)?\s*(.*?)\s*```", text, re.DOTALL)
+    if match:
+        return match.group(1).strip() + "\n"
+
+    lines = text.splitlines()
+    if lines and re.fullmatch(r"```(?:python|html|css|text)?\s*", lines[0].strip()):
+        lines = lines[1:]
+    if lines and lines[-1].strip() == "```":
+        lines = lines[:-1]
+    return "\n".join(lines).strip() + "\n"
+
+
+def ensure_template_static_load(content):
+    if "{% static" not in content or "{% load static %}" in content:
+        return content
+    return "{% load static %}\n" + content.lstrip()
+
+
 def clean_generated_content(path_name, content):
+    content = strip_markdown_fence(content)
     suffix = Path(path_name).suffix.lower()
     if suffix == ".py":
         return remove_python_comments(content)
     if suffix == ".html":
-        return remove_html_comments(content)
+        return ensure_template_static_load(remove_html_comments(content))
     if suffix == ".css":
         return remove_css_comments(content)
     return content.strip() + "\n"
@@ -1471,6 +1616,32 @@ def copy_assets(assets, backup_root):
     return copied
 
 
+def list_input_import_resources():
+    return sorted(
+        path
+        for path in INPUT_DIR.rglob("*")
+        if path.is_file() and path.suffix.lower() in IMPORT_EXTENSIONS
+    )
+
+
+def copy_import_resources(backup_root):
+    copied = []
+    target_dir = (PROJECT_ROOT / IMPORT_TARGET_DIR).resolve()
+    target_dir.mkdir(parents=True, exist_ok=True)
+    for source in list_input_import_resources():
+        target_name = f"{IMPORT_TARGET_DIR}/{source.name}"
+        target = (PROJECT_ROOT / target_name).resolve()
+        if not is_inside(PROJECT_ROOT, target):
+            raise ValueError(f"Путь файла импорта вышел за пределы проекта: {target_name}")
+        if target.exists():
+            backup = backup_root / target_name
+            backup.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(target, backup)
+        shutil.copy2(source, target)
+        copied.append(target_name)
+    return copied
+
+
 def run_project_command(command, timeout=180):
     env = os.environ.copy()
     env.pop("VIRTUAL_ENV", None)
@@ -1488,10 +1659,83 @@ def run_project_command(command, timeout=180):
     return completed.returncode == 0, output.strip()
 
 
+TEMPLATE_COMPILE_SCRIPT = """
+from django.template.loader import get_template
+from core import views
+
+templates = {'core/base.html', 'core/login.html'}
+for value in vars(views).values():
+    template_name = getattr(value, 'template_name', None)
+    if isinstance(template_name, str):
+        templates.add(template_name)
+
+for template_name in sorted(templates):
+    get_template(template_name)
+print('Templates OK')
+""".strip()
+
+
+PAGE_SMOKE_SCRIPT = """
+from django.apps import apps
+from django.db import connection
+from django.test import Client
+from django.urls import URLPattern, URLResolver, get_resolver
+
+try:
+    existing_tables = set(connection.introspection.table_names())
+except Exception as error:
+    print(f'Page smoke skipped: database is not ready: {error}')
+    raise SystemExit(0)
+
+required_tables = {
+    model._meta.db_table
+    for model in apps.get_app_config('core').get_models()
+    if model._meta.managed
+}
+missing_tables = sorted(required_tables - existing_tables)
+if missing_tables:
+    print('Page smoke skipped: missing tables: ' + ', '.join(missing_tables[:10]))
+    raise SystemExit(0)
+
+def walk(patterns, prefix=''):
+    for pattern in patterns:
+        if isinstance(pattern, URLPattern):
+            route = prefix + str(pattern.pattern)
+            if '<' not in route and not route.startswith('admin/'):
+                yield '/' + route.lstrip('/')
+        elif isinstance(pattern, URLResolver):
+            yield from walk(pattern.url_patterns, prefix + str(pattern.pattern))
+
+client = Client()
+errors = []
+for path in sorted(set(walk(get_resolver().url_patterns))):
+    try:
+        response = client.get(path)
+    except Exception as error:
+        errors.append(f'{path}: {error.__class__.__name__}: {error}')
+        continue
+    print(f'{path}: HTTP {response.status_code}')
+    if response.status_code >= 500:
+        errors.append(f'{path}: HTTP {response.status_code}')
+
+if errors:
+    print('\\n'.join(errors))
+    raise SystemExit(1)
+
+print('Page smoke OK')
+""".strip()
+
+
 def validate_project():
+    consistency_errors = check_generated_consistency({"files": []})
+    if consistency_errors:
+        text = "\n".join(f"- {error}" for error in consistency_errors)
+        return False, f"$ internal consistency check\n{text}"
+
     commands = [
         ["uv", "run", "python", "-m", "py_compile", "core/models.py", "core/forms.py", "core/views.py", "core/management/commands/import_data.py", "config/urls.py"],
         ["uv", "run", "python", "manage.py", "check"],
+        ["uv", "run", "python", "manage.py", "shell", "-c", TEMPLATE_COMPILE_SCRIPT],
     ]
     report = []
     for command in commands:
@@ -1502,6 +1746,27 @@ def validate_project():
         if not ok:
             return False, "\n\n".join(report)
     return True, "\n\n".join(report)
+
+
+def validate_pages():
+    ok, output = validate_project()
+    report = [output]
+    if not ok:
+        return False, "\n\n".join(report)
+
+    command = ["uv", "run", "python", "manage.py", "shell", "-c", PAGE_SMOKE_SCRIPT]
+    command_text = " ".join(command)
+    log(f"Проверяю страницы: {command_text}")
+    ok, output = run_project_command(command)
+    report.append(f"$ {command_text}\n{output or 'OK'}")
+    if "Page smoke skipped" in output:
+        report.append("База данных еще не готова для проверки страниц. Сначала выполни makemigrations, migrate и import_data.")
+        return False, "\n\n".join(report)
+    return ok, "\n\n".join(report)
+
+
+def page_test_waits_for_database(output):
+    return "Page smoke skipped" in output or "База данных еще не готова" in output
 
 
 def safe_output_name(path_name):
@@ -1566,7 +1831,7 @@ def ensure_blueprint_templates(manifest, blueprint_text):
     files = filter_generated_files(manifest.get("files", []))
     paths = {normalize_relative_path(item.get("path", "")) for item in files}
     for page in blueprint.get("pages", []):
-        template = normalize_relative_path(page.get("template", ""))
+        template = normalize_template_file_path(page.get("template", ""))
         if not template:
             continue
         if not template.startswith("core/templates/core/") or not template.endswith(".html"):
@@ -1630,6 +1895,10 @@ def generated_template_paths(data):
         path_name = item["path"]
         if path_name.startswith("core/templates/core/") and path_name.endswith(".html"):
             paths.add(path_name)
+    views_content = read_project_or_generated(data, "core/views.py")
+    for template_name in re.findall(r"template_name\s*=\s*[\"']([^\"']+)[\"']", views_content):
+        if template_name.startswith("core/") and template_name.endswith(".html"):
+            paths.add(f"core/templates/{template_name}")
     for path_name in ("core/templates/core/base.html", "core/templates/core/login.html"):
         if (PROJECT_ROOT / path_name).exists():
             paths.add(path_name)
@@ -1734,6 +2003,107 @@ def extract_update_or_create_fields(tree):
     return writes
 
 
+def field_has_truthy_keyword(call, name):
+    for keyword in call.keywords:
+        if keyword.arg == name and isinstance(keyword.value, ast.Constant):
+            return keyword.value.value is True
+    return False
+
+
+def field_has_keyword(call, name):
+    return any(keyword.arg == name for keyword in call.keywords)
+
+
+def extract_required_model_fields(tree):
+    fields = {}
+    if tree is None:
+        return fields
+    for node in tree.body:
+        if not isinstance(node, ast.ClassDef):
+            continue
+        current = set()
+        for statement in node.body:
+            if not isinstance(statement, ast.Assign):
+                continue
+            call = statement.value
+            field_type = call_name(call)
+            if field_type not in MODEL_FIELD_TYPES:
+                continue
+            if field_type in ("AutoField", "BigAutoField"):
+                continue
+            if field_has_truthy_keyword(call, "null") or field_has_truthy_keyword(call, "blank") or field_has_keyword(call, "default"):
+                continue
+            for target in statement.targets:
+                if isinstance(target, ast.Name):
+                    current.add(target.id)
+        fields[node.name] = current
+    return fields
+
+
+def extract_get_or_create_fields(tree):
+    writes = []
+    if tree is None:
+        return writes
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        function = node.func
+        if not isinstance(function, ast.Attribute) or function.attr != "get_or_create":
+            continue
+        owner = function.value
+        if not isinstance(owner, ast.Attribute) or owner.attr != "objects":
+            continue
+        if not isinstance(owner.value, ast.Name):
+            continue
+        model_name = owner.value.id
+        fields = {keyword.arg for keyword in node.keywords if keyword.arg and keyword.arg != "defaults"}
+        defaults = next((keyword.value for keyword in node.keywords if keyword.arg == "defaults"), None)
+        if isinstance(defaults, ast.Dict):
+            fields.update(key.value for key in defaults.keys if isinstance(key, ast.Constant) and isinstance(key.value, str))
+        writes.append((model_name, fields))
+    return writes
+
+
+def extract_string_constants(tree):
+    if tree is None:
+        return []
+    return [node.value for node in ast.walk(tree) if isinstance(node, ast.Constant) and isinstance(node.value, str)]
+
+
+def has_custom_user_model(models_content):
+    return bool(re.search(r"class\s+User\s*\([^)]*AbstractUser[^)]*\)", models_content))
+
+
+def auth_user_model_value(settings_content):
+    match = re.search(r"\bAUTH_USER_MODEL\s*=\s*[\"']([^\"']+)[\"']", settings_content)
+    return match.group(1) if match else ""
+
+
+def has_list_page(views_content, urls_content):
+    return "ListView" in views_content or bool(re.search(r"name\s*=\s*[\"'][^\"']*list[^\"']*[\"']", urls_content))
+
+
+def views_have_list_controls(views_content):
+    required_get = "request.GET" in views_content or "self.request.GET" in views_content
+    has_filter = ".filter(" in views_content or " Q(" in views_content or "Q(" in views_content
+    has_sort = ".order_by(" in views_content or "sort" in views_content or "order" in views_content
+    return required_get and has_filter and has_sort
+
+
+def is_list_template(path_name):
+    normalized = normalize_relative_path(path_name)
+    return normalized.startswith("core/templates/core/") and normalized.endswith(".html") and "list" in Path(normalized).stem
+
+
+def template_has_list_controls(content):
+    lower = content.lower()
+    has_get_form = re.search(r"<form[^>]*method=[\"']get[\"']", content, flags=re.IGNORECASE) is not None
+    has_search = 'name="q"' in lower or "name='q'" in lower or "search" in lower or "поиск" in lower
+    has_filter = "filter" in lower or "фильтр" in lower or "name=\"type\"" in lower or "name='type'" in lower or "name=\"status\"" in lower or "name='status'" in lower
+    has_sort = "sort" in lower or "сорт" in lower or "order" in lower
+    return has_get_form and has_search and has_filter and has_sort
+
+
 def extract_url_names_from_urls(content):
     return set(re.findall(r"name\s*=\s*[\"']([^\"']+)[\"']", content))
 
@@ -1764,6 +2134,7 @@ def check_generated_consistency(data):
 
     urls_content = read_project_or_generated(data, "config/urls.py")
     views_content = read_project_or_generated(data, "core/views.py")
+    models_content = read_project_or_generated(data, "core/models.py")
     models_tree = python_trees.get("core/models.py")
     forms_tree = python_trees.get("core/forms.py")
     views_tree = python_trees.get("core/views.py")
@@ -1779,8 +2150,20 @@ def check_generated_consistency(data):
                         errors.append(f"config/urls.py импортирует {alias.name}, но такого класса/функции нет в core/views.py")
 
     url_names = extract_url_names_from_urls(urls_content)
+    settings_content = read_project_or_generated(data, "config/settings.py")
+    if "django.contrib.admin" in settings_content and "admin.site.urls" not in urls_content:
+        errors.append("config/urls.py не содержит маршрут admin/. Нужно сохранить path('admin/', admin.site.urls).")
+    if "name='partner_list'" in urls_content or 'name="partner_list"' in urls_content or re.search(r"name\s*=\s*[\"'][^\"']*list[^\"']*[\"']", urls_content):
+        if not re.search(r"path\(\s*[\"']{2}\s*,", urls_content):
+            errors.append("config/urls.py не содержит главную страницу ''. Добавь корневой маршрут на основной список.")
     for path_name in generated_template_paths(data):
         content = read_project_or_generated(data, path_name)
+        if "```" in content:
+            errors.append(f"{path_name} содержит markdown-ограждение ```, в HTML-файле его быть не должно")
+        if "{% static" in content and "{% load static %}" not in content:
+            errors.append(f"{path_name} использует static, но не содержит {{% load static %}}")
+        if re.search(r"<form[^>]*method=[\"']post[\"']", content, flags=re.IGNORECASE) and "{% csrf_token %}" not in content:
+            errors.append(f"{path_name} содержит POST-форму без {{% csrf_token %}}")
         for name in extract_url_names_from_templates(content):
             if name not in url_names:
                 errors.append(f"{path_name} использует url '{name}', но такого name нет в config/urls.py")
@@ -1828,12 +2211,161 @@ def check_generated_consistency(data):
             if field not in model_fields[model_name]:
                 errors.append(f"import_data.py записывает поле {model_name}.{field}, но такого поля нет в core/models.py")
 
+    required_fields = extract_required_model_fields(models_tree)
+    for model_name, fields in extract_get_or_create_fields(import_tree):
+        missing = sorted(required_fields.get(model_name, set()) - set(fields))
+        if missing:
+            errors.append(f"import_data.py вызывает {model_name}.objects.get_or_create без обязательных полей: {', '.join(missing)}. Для уже импортированных связей используй get(), а не get_or_create().")
+
+    for value in extract_string_constants(import_tree):
+        lower = value.lower()
+        if not any(lower.endswith(suffix) for suffix in IMPORT_EXTENSIONS):
+            continue
+        normalized = value.replace("\\", "/")
+        if normalized.startswith("Ресурсы/") or normalized.startswith("tools/input/") or "/" in normalized:
+            errors.append(f"import_data.py использует путь '{value}'. Excel/CSV должны читаться из core/import через BASE_DIR, без папки Ресурсы/tools/input.")
+
+    if has_list_page(views_content, urls_content) and not views_have_list_controls(views_content):
+        errors.append("core/views.py содержит list-страницу без полноценного get_queryset() с поиском, фильтрацией и сортировкой через GET-параметры")
+
+    for path_name in generated_template_paths(data):
+        if is_list_template(path_name):
+            content = read_project_or_generated(data, path_name)
+            if not template_has_list_controls(content):
+                errors.append(f"{path_name} является list-шаблоном, но не содержит GET-форму поиска, фильтра и сортировки")
+
     for path_name in generated_template_paths(data):
         content = read_project_or_generated(data, path_name)
         if re.search(r"{%\s*extends\s+[\"']base\.html[\"']\s*%}", content):
             errors.append(f"{path_name} расширяет base.html, нужно использовать core/base.html")
 
     return errors
+
+
+def check_schema_consistency(data):
+    errors = []
+    python_trees = {}
+    for path_name in SCHEMA_STAGE_FILES:
+        content = read_project_or_generated(data, path_name)
+        if content:
+            python_trees[path_name] = parse_python(content, path_name, errors)
+
+    models_tree = python_trees.get("core/models.py")
+    import_tree = python_trees.get("core/management/commands/import_data.py")
+    model_fields = extract_model_fields(models_tree)
+    model_names = set(model_fields)
+
+    for path_name, tree in python_trees.items():
+        if tree is None:
+            continue
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.ImportFrom):
+                continue
+            if node.module == "models" and node.level == 1:
+                for alias in node.names:
+                    if alias.name not in model_names:
+                        errors.append(f"{path_name} импортирует модель {alias.name}, но ее нет в core/models.py")
+
+    for model_name, fields in extract_update_or_create_fields(import_tree):
+        if model_name not in model_fields:
+            continue
+        for field in fields:
+            if field not in model_fields[model_name]:
+                errors.append(f"import_data.py записывает поле {model_name}.{field}, но такого поля нет в core/models.py")
+
+    required_fields = extract_required_model_fields(models_tree)
+    for model_name, fields in extract_get_or_create_fields(import_tree):
+        missing = sorted(required_fields.get(model_name, set()) - set(fields))
+        if missing:
+            errors.append(f"import_data.py вызывает {model_name}.objects.get_or_create без обязательных полей: {', '.join(missing)}. Для уже импортированных связей используй get(), а не get_or_create().")
+
+    for value in extract_string_constants(import_tree):
+        lower = value.lower()
+        if not any(lower.endswith(suffix) for suffix in IMPORT_EXTENSIONS):
+            continue
+        normalized = value.replace("\\", "/")
+        if normalized.startswith("Ресурсы/") or normalized.startswith("tools/input/") or "/" in normalized:
+            errors.append(f"import_data.py использует путь '{value}'. Excel/CSV должны читаться из core/import через BASE_DIR, без папки Ресурсы/tools/input.")
+
+    return errors
+
+
+def manifest_from_paths(summary, paths, reason):
+    return {
+        "summary": summary,
+        "steps": [],
+        "commands": [],
+        "files": [{"path": path_name, "reason": reason} for path_name in paths],
+        "assets": [],
+    }
+
+
+def normalize_template_file_path(template):
+    normalized = normalize_relative_path(template)
+    if not normalized or not normalized.endswith(".html"):
+        return ""
+    if normalized.startswith("core/templates/core/"):
+        return normalized
+    if normalized.startswith("core/"):
+        return f"core/templates/{normalized}"
+    if "/" not in normalized:
+        return f"core/templates/core/{normalized}"
+    return normalized
+
+
+def blueprint_templates(blueprint_text):
+    try:
+        blueprint = json.loads(blueprint_text)
+    except json.JSONDecodeError:
+        return []
+    templates = []
+    for page in blueprint.get("pages", []):
+        template = normalize_template_file_path(page.get("template", ""))
+        if template.startswith("core/templates/core/") and template.endswith(".html"):
+            templates.append(template)
+    return templates
+
+
+def blueprint_assets(blueprint_text):
+    try:
+        blueprint = json.loads(blueprint_text)
+    except json.JSONDecodeError:
+        return []
+    return blueprint.get("assets", [])
+
+
+def get_or_create_blueprint():
+    path = OUTPUT_DIR / "blueprint.md"
+    if path.exists():
+        return read_text(path)
+    assignment_context = collect_assignment()
+    return get_blueprint(assignment_context)
+
+
+def build_stage_change_set(context, manifest, check_func, stage_name):
+    data = build_full_change_set(context, manifest)
+    last_errors = []
+    for attempt in range(1, MAX_REPAIR_ATTEMPTS + 1):
+        errors = check_func(data)
+        if not errors:
+            return data, []
+        last_errors = errors
+        errors_text = "\n".join(f"- {error}" for error in errors)
+        save_output(f"{stage_name}_errors_{attempt}.md", errors_text)
+        log(f"{stage_name}: проверка нашла проблем: {len(errors)}. Перегенерирую файлы {attempt}/{MAX_REPAIR_ATTEMPTS}...", 82)
+        runtime_context = build_runtime_context(context, data["files"], errors_text)
+        data = build_full_change_set(runtime_context, manifest)
+
+    final_errors = check_func(data)
+    return data, final_errors or last_errors
+
+
+def validate_schema_project():
+    command = ["uv", "run", "python", "-m", "py_compile", *SCHEMA_STAGE_FILES]
+    command_text = " ".join(command)
+    log(f"Проверяю схему: {command_text}")
+    ok, output = run_project_command(command)
+    return ok, f"$ {command_text}\n{output or 'OK'}"
 
 
 def replace_generated_files(data, fixes):
@@ -1892,24 +2424,43 @@ def build_full_change_set(context, manifest):
         percent = 30 + round(index / max(total, 1) * 50)
         log(f"генерирует файл {index}/{total}: {path_name}", percent)
         runtime_context = build_file_context(context, result["files"], path_name, order_note)
-        answer = call_yandex(build_file_prompt(runtime_context, path_name, reason))
-        save_output("last_response.md", answer)
-        save_output(f"response_{safe_output_name(path_name)}.md", answer)
-        try:
-            content = extract_file_content(answer, path_name)
-        except ValueError:
-            log(f"Повторяю генерацию файла без лишнего текста: {path_name}")
-            retry_context = build_file_context(context, result["files"], path_name, order_note)
-            answer = call_yandex(build_file_retry_prompt(retry_context, path_name, reason, answer))
+        answer = ""
+        content = None
+        last_error = None
+        for attempt in range(1, MAX_FILE_GENERATION_ATTEMPTS + 1):
+            if attempt == 1:
+                prompt = build_file_prompt(runtime_context, path_name, reason)
+                output_name = f"response_{safe_output_name(path_name)}.md"
+            else:
+                log(f"Повторяю генерацию файла {attempt}/{MAX_FILE_GENERATION_ATTEMPTS}: {path_name}")
+                retry_context = build_file_context(
+                    context,
+                    result["files"],
+                    path_name,
+                    order_note + f"\nПредыдущая ошибка генерации файла: {last_error}",
+                )
+                prompt = build_file_retry_prompt(retry_context, path_name, reason, answer)
+                output_name = f"response_retry_{attempt}_{safe_output_name(path_name)}.md"
+
+            answer = call_yandex(prompt)
             save_output("last_response.md", answer)
-            save_output(f"response_retry_{safe_output_name(path_name)}.md", answer)
-            content = extract_file_content(answer, path_name)
+            save_output(output_name, answer)
+            try:
+                content = extract_file_content(answer, path_name)
+                break
+            except ValueError as error:
+                last_error = str(error)
+                if attempt == MAX_FILE_GENERATION_ATTEMPTS:
+                    raise
+
+        if content is None:
+            raise ValueError(f"Не удалось сгенерировать файл {path_name}")
         content = clean_generated_content(path_name, content)
         result["files"].append({"path": path_name, "content": content})
     return result
 
 
-def repair_generated_consistency(context, data, attempts=2):
+def repair_generated_consistency(context, data, attempts=MAX_REPAIR_ATTEMPTS):
     last_errors = []
     for attempt in range(1, attempts + 1):
         errors = check_generated_consistency(data)
@@ -1937,7 +2488,7 @@ def repair_generated_consistency(context, data, attempts=2):
     return data, final_errors or last_errors
 
 
-def repair_project(error_text, attempts=2):
+def repair_project(error_text, attempts=MAX_REPAIR_ATTEMPTS):
     all_changed = []
     last_error = error_text
     last_backup = None
@@ -2009,6 +2560,165 @@ def command_plan():
     print(f"Файл: {path}")
 
 
+def command_schema():
+    log("Собираю задание и Excel...", 5)
+    assignment_context = collect_assignment()
+    log("строит blueprint для моделей и импорта...", 10)
+    blueprint = get_blueprint(assignment_context)
+    context = build_generation_context(blueprint)
+    context = "\n".join(
+        [
+            context,
+            "\n# РЕЖИМ SCHEMA",
+            "Сейчас нужно сгенерировать только модели, admin.py и import_data.py.",
+            "Не трогай forms.py, views.py, urls.py, templates, css и settings.py.",
+            "core/models.py должен быть похож по простоте на текущий учебный Django-код, но полностью под новые Excel-данные.",
+            "import_data.py должен быть простым, идемпотентным и читать Excel/CSV только из core/import.",
+            "core/admin.py должен регистрировать только реальные модели из core/models.py.",
+        ]
+    )
+    manifest = manifest_from_paths(
+        "Схема данных и импорт",
+        SCHEMA_STAGE_FILES,
+        "этап schema: модели, регистрация в админке и импорт данных",
+    )
+    data, errors = build_stage_change_set(context, manifest, check_schema_consistency, "schema")
+    if errors:
+        errors_text = "\n".join(f"- {error}" for error in errors)
+        save_output("schema_errors_final.md", errors_text)
+        raise ValueError("schema не прошел внутреннюю проверку. Подробности: tools/output/schema_errors_final.md")
+
+    log("Записываю schema-файлы и создаю backup...", 85)
+    changed, backup = write_files(data)
+    log("Копирую Excel/CSV для import_data...", 92)
+    copied_imports = copy_import_resources(backup)
+    check_ok, check_output = validate_schema_project()
+    save_output("schema_check.md", check_output)
+
+    report = [
+        f"# Отчет schema {dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+        "",
+        "## Измененные файлы",
+        *(f"- {path}" for path in changed),
+        "",
+        "## Скопированные файлы импорта",
+        *(f"- {path}" for path in copied_imports),
+        "",
+        "## Backup",
+        str(backup),
+        "",
+        "## Проверка",
+        "OK" if check_ok else "ОШИБКА",
+        "",
+        "```text",
+        check_output,
+        "```",
+    ]
+    path = save_output("schema_report.md", "\n".join(report))
+    log("Schema готов.", 100)
+    print(f"Изменено файлов: {len(changed)}")
+    print(f"Скопировано файлов импорта: {len(copied_imports)}")
+    print(f"Проверка schema: {'OK' if check_ok else 'ОШИБКА'}")
+    print(f"Отчет: {path}")
+    print(f"Backup: {backup}")
+    if not check_ok:
+        sys.exit(1)
+
+
+def command_interface():
+    log("Собираю blueprint и текущие schema-файлы...", 5)
+    blueprint = get_or_create_blueprint()
+    context = build_generation_context(blueprint)
+    context = "\n".join(
+        [
+            context,
+            "\n# РЕЖИМ INTERFACE",
+            "Сейчас нужно сгенерировать только интерфейс: forms.py, views.py, urls.py, templates, css, permissions/context_processors.",
+            "Не трогай core/models.py, core/admin.py, import_data.py и config/settings.py.",
+            "Бери модели и поля из текущего core/models.py как источник правды.",
+            "Сохрани все страницы из BLUEPRINT: список, добавление, редактирование, просмотр, история, если они там есть.",
+            "Главная list-страница должна иметь поиск, фильтр и сортировку через GET.",
+            "config/urls.py должен содержать все нужные маршруты, включая главную страницу и login/logout при наличии login.html/base.html.",
+        ]
+    )
+    paths = list(INTERFACE_STAGE_BASE_FILES)
+    for template in blueprint_templates(blueprint):
+        if template not in paths:
+            paths.append(template)
+    manifest = manifest_from_paths(
+        "Интерфейс проекта",
+        paths,
+        "этап interface: формы, views, urls, templates, css и права интерфейса",
+    )
+    data, errors = build_stage_change_set(context, manifest, check_generated_consistency, "interface")
+    if errors:
+        errors_text = "\n".join(f"- {error}" for error in errors)
+        save_output("interface_errors_final.md", errors_text)
+        raise ValueError("interface не прошел внутреннюю проверку. Подробности: tools/output/interface_errors_final.md")
+
+    assets = validate_assets({"assets": blueprint_assets(blueprint)})
+    log("Записываю interface-файлы и создаю backup...", 85)
+    changed, backup = write_files(data)
+    log("Копирую картинки...", 92)
+    copied_assets = copy_assets(assets, backup)
+    log("Проверяю проект после interface...", 93)
+    check_ok, check_output = validate_project()
+    save_output("interface_check.md", check_output)
+    repair_changed = []
+    repair_backup = None
+    if not check_ok:
+        log("Interface-проверка упала, запускаю repair...", 94)
+        check_ok, check_output, repair_changed, repair_backup = repair_project(check_output)
+        save_output("interface_check_after_repair.md", check_output)
+        changed.extend(repair_changed)
+
+    report = [
+        f"# Отчет interface {dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+        "",
+        "## Измененные файлы",
+        *(f"- {path}" for path in changed),
+        "",
+        "## Скопированные картинки",
+        *(f"- {path}" for path in copied_assets),
+        "",
+        "## Backup",
+        str(backup),
+        "",
+        "## Backup исправления",
+        str(repair_backup or ""),
+        "",
+        "## Проверка",
+        "OK" if check_ok else "ОШИБКА",
+        "",
+        "```text",
+        check_output,
+        "```",
+    ]
+    path = save_output("interface_report.md", "\n".join(report))
+    log("Interface готов.", 100)
+    print(f"Изменено файлов: {len(changed)}")
+    print(f"Скопировано картинок: {len(copied_assets)}")
+    print(f"Проверка interface: {'OK' if check_ok else 'ОШИБКА'}")
+    print(f"Отчет: {path}")
+    print(f"Backup: {backup}")
+    if repair_backup:
+        print(f"Backup исправления: {repair_backup}")
+    if not check_ok:
+        sys.exit(1)
+
+
+def command_audit(condition):
+    log("Собираю контекст для аудита...", 10)
+    context = build_context()
+    log(" проверяет соответствие требованиям...", 50)
+    answer = call_yandex(build_audit_prompt(context, condition))
+    save_output("last_response.md", answer)
+    path = save_output("audit.md", answer)
+    log("Аудит сохранен.", 100)
+    print(answer.strip())
+    print(f"\nОтчет: {path}")
+
+
 def command_apply():
     log("Собираю контекст...", 5)
     assignment_context = collect_assignment()
@@ -2043,6 +2753,8 @@ def command_apply():
     changed, backup = write_files(data)
     log("Копирую картинки...", 92)
     copied_assets = copy_assets(assets, backup)
+    log("Копирую Excel/CSV для import_data...", 92)
+    copied_imports = copy_import_resources(backup)
     log("Проверяю проект после изменений...", 93)
     check_ok, check_output = validate_project()
     save_output("check_after_apply.md", check_output)
@@ -2063,6 +2775,9 @@ def command_apply():
         "",
         "## Скопированные картинки",
         *(f"- {path}" for path in copied_assets),
+        "",
+        "## Скопированные файлы импорта",
+        *(f"- {path}" for path in copied_imports),
         "",
         "## Backup",
         str(backup),
@@ -2087,6 +2802,7 @@ def command_apply():
     log("Готово.", 100)
     print(f"Изменено файлов: {len(changed)}")
     print(f"Скопировано картинок: {len(copied_assets)}")
+    print(f"Скопировано файлов импорта: {len(copied_imports)}")
     print(f"Проверка Django: {'OK' if check_ok else 'ОШИБКА'}")
     print(f"Отчет: {path}")
     print(f"Backup: {backup}")
@@ -2182,6 +2898,34 @@ def command_check():
         sys.exit(1)
 
 
+def command_test_pages():
+    ok, output = validate_pages()
+    save_output("pages_check_before_repair.md", output)
+    changed = []
+    backup = None
+    attempt = 0
+
+    while not ok and not page_test_waits_for_database(output) and attempt < MAX_REPAIR_ATTEMPTS:
+        attempt += 1
+        log(f"Проверка страниц упала, исправление {attempt}/{MAX_REPAIR_ATTEMPTS}...", 94)
+        _, repair_output, repair_changed, backup = repair_project(output, attempts=1)
+        changed.extend(repair_changed)
+        ok, output = validate_pages()
+        save_output(f"pages_check_after_repair_{attempt}.md", output)
+        if not repair_changed and repair_output == output:
+            break
+
+    path = save_output("pages_check.md", output)
+    print(output)
+    print(f"\nОтчет: {path}")
+    if changed:
+        print(f"Изменено файлов: {len(changed)}")
+    if backup:
+        print(f"Backup исправления: {backup}")
+    if not ok:
+        sys.exit(1)
+
+
 def command_repair():
     ok, output = validate_project()
     save_output("manual_check_before_repair.md", output)
@@ -2201,7 +2945,7 @@ def command_repair():
 def main():
     ensure_dirs()
     parser = argparse.ArgumentParser()
-    parser.add_argument("command", choices=["collect", "test", "plan", "apply", "ask", "chat", "restore", "check", "repair"])
+    parser.add_argument("command", choices=["collect", "test", "plan", "schema", "interface", "apply", "ask", "chat", "audit", "restore", "check", "test_pages", "repair"])
     parser.add_argument("question", nargs=argparse.REMAINDER)
     args = parser.parse_args()
 
@@ -2209,11 +2953,15 @@ def main():
         "collect": command_collect,
         "test": command_test,
         "plan": command_plan,
+        "schema": command_schema,
+        "interface": command_interface,
         "apply": command_apply,
         "ask": lambda: command_ask(" ".join(args.question).strip()),
         "chat": command_chat,
+        "audit": lambda: command_audit(" ".join(args.question).strip()),
         "restore": lambda: command_restore(" ".join(args.question).strip()),
         "check": command_check,
+        "test_pages": command_test_pages,
         "repair": command_repair,
     }
     try:
