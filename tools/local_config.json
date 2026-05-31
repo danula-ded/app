@@ -1,0 +1,7 @@
+{
+  "YC_API_KEY": "вставь_сюда_свой_api_ключ",
+  "YC_FOLDER_ID": "вставь_сюда_folder_id",
+  "YC_MODEL": "yandexgpt",
+  "YC_MODEL_VERSION": "rc",
+  "YC_TEMPERATURE": "0.2"
+}
