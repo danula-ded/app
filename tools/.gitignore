@@ -4,3 +4,4 @@ __pycache__/
 output/
 backups/
 input/current_demo/
+local_config.private.json
