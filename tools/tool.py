@@ -75,6 +75,14 @@ def ensure_dirs():
     BACKUP_DIR.mkdir(parents=True, exist_ok=True)
 
 
+def log(message, percent=None):
+    now = dt.datetime.now().strftime("%H:%M:%S")
+    if percent is None:
+        print(f"[{now}] {message}")
+    else:
+        print(f"[{now}] [{percent:3d}%] {message}")
+
+
 def rel(path):
     return path.resolve().relative_to(PROJECT_ROOT).as_posix()
 
@@ -199,6 +207,7 @@ def build_plan_prompt(context):
 3. что менять в models.py, forms.py, views.py, urls.py, templates, import_data.py;
 4. какие команды потом запустить;
 5. какие риски проверить вручную.
+6. кратко объясни простыми словами, почему выбраны такие изменения.
 
 Пиши коротко, но конкретно. Код целиком пока не выдавай.
 
@@ -211,7 +220,8 @@ def build_apply_prompt(context):
     asset_targets = "\n".join(f"- {path}" for path in ALLOWED_ASSET_TARGETS)
     return f"""
 Ты помогаешь адаптировать простой Django-проект под новое экзаменационное задание.
-Нужно изменить проект минимально, без сложных абстракций, чтобы он соответствовал заданию и оставался понятным новичку.
+Нужно сначала выбрать список файлов, которые надо изменить.
+Не пиши полный код файлов на этом шаге.
 
 Разрешено переписывать только эти файлы и папки:
 {allowed}
@@ -233,7 +243,7 @@ def build_apply_prompt(context):
   "files": [
     {{
       "path": "core/models.py",
-      "content": "полный новый текст файла"
+      "reason": "зачем менять этот файл"
     }}
   ],
   "assets": [
@@ -244,9 +254,40 @@ def build_apply_prompt(context):
   ]
 }}
 
-В files включай только те файлы, которые реально надо заменить. Каждый content должен быть полным содержимым файла.
+В files включай только те файлы, которые реально надо заменить.
 В assets включай только картинки, которые нужно скопировать из tools/input в проект. source - путь относительно tools/input. target - путь относительно корня Django-проекта.
 Если картинки не нужны, верни пустой список assets.
+
+{context}
+""".strip()
+
+
+def build_file_prompt(context, path_name, reason):
+    return f"""
+Ты переписываешь один файл Django-проекта под экзаменационное задание.
+Нужно вернуть полный новый текст только для одного файла.
+
+Файл:
+{path_name}
+
+Зачем он меняется:
+{reason}
+
+Правила:
+- пиши простой понятный Django-код;
+- не добавляй лишних абстракций;
+- не создавай миграции;
+- не меняй API-ключи и пароли;
+- не добавляй комментарии без необходимости;
+- если это HTML, верни полный HTML-шаблон;
+- если это Python, верни полный Python-файл.
+
+Ответ верни строго в таком формате без Markdown:
+===FILE:{path_name}===
+полный новый текст файла
+===END===
+
+Не добавляй текст до `===FILE:{path_name}===` и после `===END===`.
 
 {context}
 """.strip()
@@ -286,7 +327,27 @@ def extract_json(text):
     end = cleaned.rfind("}")
     if start == -1 or end == -1 or end <= start:
         raise ValueError("Модель не вернула JSON с объектом.")
-    return json.loads(cleaned[start : end + 1])
+    try:
+        return json.loads(cleaned[start : end + 1])
+    except json.JSONDecodeError as error:
+        raise ValueError(
+            "AI вернул невалидный JSON. "
+            f"Строка {error.lineno}, столбец {error.colno}. "
+            "Сырой ответ сохранен в tools/output/last_response.md"
+        ) from error
+
+
+def extract_file_content(text, path_name):
+    start_marker = f"===FILE:{path_name}==="
+    end_marker = "===END==="
+    start = text.find(start_marker)
+    if start == -1:
+        raise ValueError(f"AI не вернул начало файла {path_name}. Сырой ответ сохранен в tools/output/last_response.md")
+    start += len(start_marker)
+    end = text.find(end_marker, start)
+    if end == -1:
+        raise ValueError(f"AI не вернул конец файла {path_name}. Сырой ответ сохранен в tools/output/last_response.md")
+    return text[start:end].strip()
 
 
 def is_allowed(relative_path):
@@ -371,6 +432,32 @@ def copy_assets(assets, backup_root):
     return copied
 
 
+def safe_output_name(path_name):
+    return re.sub(r"[^A-Za-z0-9_.-]+", "_", path_name.replace("/", "_").replace("\\", "_"))
+
+
+def build_full_change_set(context, manifest):
+    result = dict(manifest)
+    result["files"] = []
+    files = manifest.get("files", [])
+    total = len(files)
+    for index, item in enumerate(files, start=1):
+        path_name = item.get("path", "")
+        reason = item.get("reason", "")
+        if not path_name:
+            continue
+        if not is_allowed(path_name):
+            raise ValueError(f"Запрещенный путь для записи: {path_name}")
+        percent = 30 + round(index / max(total, 1) * 50)
+        log(f"AI генерирует файл {index}/{total}: {path_name}", percent)
+        answer = call_yandex(build_file_prompt(context, path_name, reason))
+        save_output("last_response.md", answer)
+        save_output(f"response_{safe_output_name(path_name)}.md", answer)
+        content = extract_file_content(answer, path_name)
+        result["files"].append({"path": path_name, "content": content})
+    return result
+
+
 def save_output(name, content):
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     path = OUTPUT_DIR / name
@@ -379,28 +466,43 @@ def save_output(name, content):
 
 
 def command_collect():
+    log("Собираю контекст из input и файлов проекта...", 10)
     context = build_context()
     path = save_output("context_preview.md", context)
-    print(f"Контекст собран: {path}")
+    assignment_count = len([path for path in INPUT_DIR.rglob("*") if path.is_file()])
+    log(f"Контекст собран. Файлов задания: {assignment_count}.", 100)
+    print(f"Файл: {path}")
 
 
 def command_plan():
+    log("Собираю контекст...", 10)
     context = build_context()
     prompt = build_plan_prompt(context)
+    log("AI анализирует задание и готовит план...", 40)
     answer = call_yandex(prompt)
     save_output("last_response.md", answer)
     path = save_output("plan.md", answer)
-    print(f"План сохранен: {path}")
+    log("План сохранен.", 100)
+    print(f"Файл: {path}")
 
 
 def command_apply():
+    log("Собираю контекст...", 5)
     context = build_context()
     prompt = build_apply_prompt(context)
+    log("AI выбирает список файлов для изменения...", 15)
     answer = call_yandex(prompt)
     save_output("last_response.md", answer)
-    data = extract_json(answer)
-    assets = validate_assets(data)
+    save_output("apply_manifest_response.md", answer)
+    log("Разбираю список изменений от AI...", 25)
+    manifest = extract_json(answer)
+    assets = validate_assets(manifest)
+    files_count = len(manifest.get("files", []))
+    log(f"AI предложил файлов: {files_count}, картинок: {len(assets)}.", 30)
+    data = build_full_change_set(context, manifest)
+    log("Записываю файлы и создаю backup...", 85)
     changed, backup = write_files(data)
+    log("Копирую картинки...", 92)
     copied_assets = copy_assets(assets, backup)
     report = [
         f"# Отчет AI-помощника {dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
@@ -423,6 +525,7 @@ def command_apply():
         *(f"- {step}" for step in data.get("steps", [])),
     ]
     path = save_output("apply_report.md", "\n".join(report))
+    log("Готово.", 100)
     print(f"Изменено файлов: {len(changed)}")
     print(f"Скопировано картинок: {len(copied_assets)}")
     print(f"Отчет: {path}")
@@ -430,7 +533,9 @@ def command_apply():
 
 
 def command_test():
+    log("Проверяю подключение к Yandex AI Studio...", 50)
     answer = call_yandex("Ответь одним предложением: API Yandex AI Studio работает.")
+    log("Ответ получен.", 100)
     print(answer.strip())
 
 

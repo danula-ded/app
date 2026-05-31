@@ -111,6 +111,33 @@ uv run python tool.py plan
 uv run python tool.py apply
 ```
 
+## Как понять, где работает AI
+
+`collect` не обращается к AI. Он только читает файлы и собирает контекст:
+
+```text
+[10%] Собираю контекст из input и файлов проекта...
+[100%] Контекст собран.
+```
+
+`test` обращается к AI один раз и проверяет, что ключ работает.
+
+`plan` обращается к AI один раз и сохраняет текстовый план в `tools/output/plan.md`.
+
+`apply` работает в несколько шагов:
+
+```text
+[5%]  собирает контекст
+[15%] AI выбирает список файлов для изменения
+[25%] разбирает короткий JSON со списком файлов
+[30-80%] AI генерирует каждый файл отдельно
+[85%] записывает файлы и создает backup
+[92%] копирует картинки
+[100%] готово
+```
+
+Такой режим надежнее, чем просить AI вернуть весь проект одним огромным JSON.
+
 ## Результаты
 
 ```text
@@ -118,6 +145,8 @@ tools/output/context_preview.md
 tools/output/plan.md
 tools/output/apply_report.md
 tools/output/last_response.md
+tools/output/apply_manifest_response.md
+tools/output/response_core_models.py.md
 ```
 
 Перед заменой файлов скрипт делает backup:
@@ -125,6 +154,14 @@ tools/output/last_response.md
 ```text
 tools/backups/
 ```
+
+Если `apply` упал с ошибкой, сначала открой:
+
+```text
+tools/output/last_response.md
+```
+
+Если ошибка произошла до записи файлов, проект не менялся. Если ошибка произошла после записи, восстановление лежит в `tools/backups/`.
 
 После `apply`:
 
