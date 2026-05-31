@@ -195,17 +195,6 @@ tools/output/last_response.md
 
 Если ошибка произошла до записи файлов, проект не менялся. Если ошибка произошла после записи, восстановление лежит в `tools/backups/`.
 
-После `apply`:
-
-```powershell
-cd ..
-uv run python manage.py check
-uv run python manage.py makemigrations
-uv run python manage.py migrate
-uv run python manage.py import_data
-uv run python manage.py runserver
-```
-
 ## Что скрипт умеет менять
 
 ```text
@@ -227,3 +216,22 @@ README.md
 Картинки скрипт не редактирует, а только копирует из `tools/input/` в разрешенные папки проекта.
 
 Миграции скрипт не создает. Их нужно создать обычной командой Django.
+
+
+uv run python tool.py collect
+uv run python tool.py test
+uv run python tool.py plan
+uv run python tool.py apply
+
+----
+
+После `apply`:
+
+```powershell
+cd ..
+uv run python manage.py check
+uv run python manage.py makemigrations
+uv run python manage.py migrate
+uv run python manage.py import_data
+uv run python manage.py runserver
+```
