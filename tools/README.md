@@ -217,6 +217,8 @@ README.md
 
 Миграции скрипт не создает. Их нужно создать обычной командой Django.
 
+uv run python tool.py ask "почему не работает импорт?"
+uv run python tool.py chat
 
 uv run python tool.py collect
 uv run python tool.py test
