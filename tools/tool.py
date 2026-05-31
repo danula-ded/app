@@ -1,10 +1,22 @@
 import argparse
+import ast
 import datetime as dt
 import json
+import os
 import re
 import shutil
+import subprocess
 import sys
+import unicodedata
+import urllib.error
+import urllib.request
 from pathlib import Path
+
+
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -34,6 +46,46 @@ ASSET_EXTENSIONS = {
     ".ico",
 }
 
+GENERATION_ORDER = [
+    "core/models.py",
+    "core/forms.py",
+    "core/views.py",
+    "core/templates/core",
+    "config/urls.py",
+    "core/admin.py",
+    "core/permissions.py",
+    "core/context_processors.py",
+    "core/management/commands/import_data.py",
+    "static/css/style.css",
+]
+
+CORE_GENERATION_FILES = [
+    "core/models.py",
+    "core/forms.py",
+    "core/views.py",
+    "config/urls.py",
+    "core/management/commands/import_data.py",
+]
+
+MODEL_FIELD_TYPES = (
+    "AutoField",
+    "BigAutoField",
+    "BooleanField",
+    "CharField",
+    "DateField",
+    "DateTimeField",
+    "DecimalField",
+    "EmailField",
+    "FileField",
+    "FloatField",
+    "ForeignKey",
+    "ImageField",
+    "IntegerField",
+    "OneToOneField",
+    "PositiveIntegerField",
+    "TextField",
+)
+
 PROJECT_FILES = [
     "core/models.py",
     "core/forms.py",
@@ -45,21 +97,58 @@ PROJECT_FILES = [
     "config/settings.py",
     "config/urls.py",
     "static/css/style.css",
-    "README.md",
 ]
 
 PROJECT_FOLDERS = [
     "core/templates/core",
-    "docs",
 ]
 
 ALLOWED_PATHS = PROJECT_FILES + PROJECT_FOLDERS
+
+BLOCKED_GENERATED_SUFFIXES = {".md"}
+BLOCKED_GENERATED_PREFIXES = ("docs/",)
+BLOCKED_GENERATED_FILES = {"README.md"}
+
+PROJECT_CONTEXT_FILES = [
+    "core/models.py",
+    "core/forms.py",
+    "core/views.py",
+    "core/admin.py",
+    "core/permissions.py",
+    "core/context_processors.py",
+    "core/management/commands/import_data.py",
+    "config/settings.py",
+    "config/urls.py",
+    "static/css/style.css",
+]
+
+PROJECT_CONTEXT_FOLDERS = [
+    "core/templates/core",
+]
+
+PROJECT_SHELL_FILES = [
+    "config/settings.py",
+    "core/templates/core/base.html",
+    "core/templates/core/login.html",
+    "static/css/style.css",
+]
+
+IGNORED_INPUT_FILES = {
+    "PUT_EXAM_FILES_HERE.md",
+}
 
 ALLOWED_ASSET_TARGETS = [
     "static/images",
     "media/products",
     "core/import",
 ]
+
+ASSET_TARGET_REPLACEMENTS = {
+    "static/icons": "static/images",
+    "static/img": "static/images",
+    "assets/images": "static/images",
+    "assets/icons": "static/images",
+}
 
 
 def load_local_config():
@@ -87,6 +176,45 @@ def rel(path):
     return path.resolve().relative_to(PROJECT_ROOT).as_posix()
 
 
+def normalize_match(value):
+    text = str(value or "").replace("\\", "/").strip()
+    return unicodedata.normalize("NFC", text).casefold()
+
+
+def normalize_relative_path(value):
+    return str(value or "").replace("\\", "/").strip().lstrip("/")
+
+
+def is_blocked_generated_path(path_name):
+    normalized = normalize_relative_path(path_name)
+    suffix = Path(normalized).suffix.lower()
+    if suffix in BLOCKED_GENERATED_SUFFIXES:
+        return True
+    if normalized in BLOCKED_GENERATED_FILES:
+        return True
+    if normalized == "docs":
+        return True
+    return any(normalized.startswith(prefix) for prefix in BLOCKED_GENERATED_PREFIXES)
+
+
+def normalize_asset_target(value):
+    target = normalize_relative_path(value)
+    for old, new in ASSET_TARGET_REPLACEMENTS.items():
+        if target == old:
+            return new
+        if target.startswith(f"{old}/"):
+            return f"{new}/{target[len(old) + 1:]}"
+    return target
+
+
+def is_inside(base, path):
+    try:
+        path.resolve().relative_to(base.resolve())
+        return True
+    except ValueError:
+        return False
+
+
 def read_text(path):
     for encoding in ("utf-8", "utf-8-sig", "cp1251"):
         try:
@@ -103,13 +231,91 @@ def read_xlsx(path):
     parts = []
     for sheet in workbook.worksheets[:8]:
         parts.append(f"Лист: {sheet.title}")
+        parts.append(f"Размер: строк {sheet.max_row}, столбцов {sheet.max_column}")
         for row_number, row in enumerate(sheet.iter_rows(values_only=True), start=1):
             if row_number > 120:
                 parts.append("...")
                 break
             values = ["" if value is None else str(value) for value in row[:35]]
-            parts.append("\t".join(values))
+            parts.append(f"{row_number}: " + "\t".join(values))
     return "\n".join(parts)
+
+
+def summarize_xlsx(path):
+    from openpyxl import load_workbook
+
+    workbook = load_workbook(path, data_only=True, read_only=True)
+    parts = [f"Файл: {path.relative_to(INPUT_DIR).as_posix()}"]
+    for sheet in workbook.worksheets[:8]:
+        rows = sheet.iter_rows(values_only=True)
+        first_rows = []
+        for row in rows:
+            values = ["" if value is None else str(value).strip() for value in row[:35]]
+            if any(values):
+                first_rows.append(values)
+            if len(first_rows) >= 8:
+                break
+
+        parts.append(f"Лист: {sheet.title}")
+        parts.append(f"Размер: строк {sheet.max_row}, столбцов {sheet.max_column}")
+        if first_rows:
+            parts.append("Предполагаемые колонки:")
+            parts.append(" | ".join(first_rows[0]))
+            if len(first_rows) > 1:
+                parts.append("Примеры строк:")
+                for index, row in enumerate(first_rows[1:], start=2):
+                    parts.append(f"{index}: " + " | ".join(row))
+        else:
+            parts.append("Лист пустой")
+    return "\n".join(parts)
+
+
+def collect_excel_overview():
+    files = sorted(
+        path
+        for path in INPUT_DIR.rglob("*")
+        if path.is_file() and path.suffix.lower() in (".xlsx", ".xlsm")
+    )
+    if not files:
+        return "Excel-файлы в tools/input не найдены."
+
+    parts = [
+        "# ТАБЛИЦЫ EXCEL ДЛЯ ПРОЕКТИРОВАНИЯ БД",
+        "По этим таблицам нужно понять сущности, поля, справочники и связи. Первая строка обычно является заголовками колонок.",
+    ]
+    for path in files:
+        parts.append(f"\n\n===== EXCEL ОБЗОР: {path.relative_to(INPUT_DIR).as_posix()} =====")
+        parts.append(summarize_xlsx(path))
+    return "\n".join(parts)
+
+
+def excel_columns(path):
+    from openpyxl import load_workbook
+
+    workbook = load_workbook(path, data_only=True, read_only=True)
+    sheet = workbook.active
+    for row in sheet.iter_rows(values_only=True):
+        values = ["" if value is None else str(value).strip() for value in row]
+        if any(values):
+            return [value for value in values if value]
+    return []
+
+
+def collect_excel_file_info():
+    files = sorted(
+        path
+        for path in INPUT_DIR.rglob("*")
+        if path.is_file() and path.suffix.lower() in (".xlsx", ".xlsm")
+    )
+    result = []
+    for path in files:
+        result.append(
+            {
+                "file": path.relative_to(INPUT_DIR).as_posix(),
+                "columns": excel_columns(path),
+            }
+        )
+    return result
 
 
 def read_docx(path):
@@ -153,11 +359,23 @@ def read_known_file(path):
     return f"Файл не прочитан как текст. Расширение: {suffix}"
 
 
+def collect_input_files():
+    return sorted(
+        path
+        for path in INPUT_DIR.rglob("*")
+        if path.is_file() and path.name not in IGNORED_INPUT_FILES
+    )
+
+
 def collect_assignment():
-    files = sorted(path for path in INPUT_DIR.rglob("*") if path.is_file())
+    files = collect_input_files()
     if not files:
         return "В папке input пока нет файлов задания."
     parts = []
+
+    if any(path.suffix.lower() in (".xlsx", ".xlsm") for path in files):
+        parts.append(collect_excel_overview())
+
     for path in files:
         parts.append(f"\n\n===== ФАЙЛ ЗАДАНИЯ: {path.relative_to(INPUT_DIR).as_posix()} =====")
         parts.append(read_known_file(path)[:30000])
@@ -166,11 +384,11 @@ def collect_assignment():
 
 def collect_project():
     paths = []
-    for name in PROJECT_FILES:
+    for name in PROJECT_CONTEXT_FILES:
         path = PROJECT_ROOT / name
         if path.exists():
             paths.append(path)
-    for folder in PROJECT_FOLDERS:
+    for folder in PROJECT_CONTEXT_FOLDERS:
         base = PROJECT_ROOT / folder
         if base.exists():
             paths.extend(
@@ -187,6 +405,16 @@ def collect_project():
     return "\n".join(parts)
 
 
+def collect_project_shell():
+    parts = []
+    for name in PROJECT_SHELL_FILES:
+        path = PROJECT_ROOT / name
+        if path.exists():
+            parts.append(f"\n\n===== ФАЙЛ ОБОЛОЧКИ ПРОЕКТА: {rel(path)} =====")
+            parts.append(read_known_file(path)[:12000])
+    return "\n".join(parts) or "Файлы оболочки проекта не найдены."
+
+
 def build_context():
     return (
         "# ВЫДАННОЕ ЗАДАНИЕ И ФАЙЛЫ\n"
@@ -194,6 +422,343 @@ def build_context():
         "# ТЕКУЩИЕ ФАЙЛЫ ПРОЕКТА\n"
         f"{collect_project()}"
     )
+
+
+def build_runtime_context(base_context, generated_files=None, extra_notes=""):
+    generated_files = generated_files or []
+    if not generated_files and not extra_notes:
+        return base_context
+
+    parts = [base_context]
+    if generated_files:
+        parts.append("\n\n# УЖЕ СГЕНЕРИРОВАННЫЕ ФАЙЛЫ ЭТОГО APPLY")
+        for item in generated_files:
+            parts.append(f"\n\n===== СГЕНЕРИРОВАНО: {item['path']} =====")
+            parts.append(item["content"][:25000])
+    if extra_notes:
+        parts.append("\n\n# ДОПОЛНИТЕЛЬНЫЕ ПРОВЕРКИ И ОШИБКИ")
+        parts.append(extra_notes)
+    return "\n".join(parts)
+
+
+def build_blueprint_prompt(assignment_context):
+    return f"""
+Ты архитектор простого Django-проекта для экзамена.
+Нужно внимательно прочитать задание и Excel-таблицы, затем составить единый план проекта.
+
+Главная цель: не смешивать старый шаблон с новым заданием.
+Excel-файлы являются главным источником сущностей, полей и связей.
+Создавай только те сущности, страницы и импорты, которые нужны по заданию.
+Не создавай CRUD для справочников, если задание явно этого не требует.
+Технические имена классов, функций, url_name и файлов пиши латиницей.
+Все видимые пользователю тексты интерфейса, сообщения и заголовки пиши на русском.
+Assets клади только в static/images, media/products или core/import. Не используй static/icons.
+
+Ответ верни строго в JSON без Markdown:
+{{
+  "project_title": "название проекта",
+  "main_entity": "главная сущность интерфейса",
+  "entities": [
+    {{
+      "name": "Partner",
+      "fields": ["name", "rating"],
+      "relations": ["type -> PartnerType"]
+    }}
+  ],
+  "excel_files": [
+    {{
+      "file": "Partners_import.xlsx",
+      "model": "Partner",
+      "columns": ["Тип партнера", "Наименование партнера"]
+    }}
+  ],
+  "pages": [
+    {{
+      "url_name": "partner_list",
+      "path": "partners/",
+      "view": "PartnerListView",
+      "template": "core/partner_list.html",
+      "purpose": "список партнеров"
+    }}
+  ],
+  "forms": [
+    {{
+      "name": "PartnerForm",
+      "model": "Partner",
+      "fields": ["name", "rating"]
+    }}
+  ],
+  "assets": [
+    {{
+      "source": "logo.png",
+      "target": "static/images/logo.png"
+    }}
+  ],
+  "must_have": ["что обязательно проверить"]
+}}
+
+{assignment_context}
+""".strip()
+
+
+def build_blueprint_retry_prompt(assignment_context, previous_answer):
+    return f"""
+Нужно вернуть только JSON с blueprint простого Django-проекта.
+Предыдущий ответ не подошел, потому что это был не JSON.
+
+Это учебная задача по Django и Excel-импорту. Никаких секретных данных, вредного кода или обхода защиты не требуется.
+
+Верни строго JSON без Markdown по формату:
+{{
+  "project_title": "название проекта",
+  "main_entity": "главная сущность",
+  "entities": [],
+  "excel_files": [],
+  "pages": [],
+  "forms": [],
+  "assets": [],
+  "must_have": []
+}}
+
+Предыдущий ответ:
+{previous_answer[:1000]}
+
+Задание:
+{assignment_context}
+""".strip()
+
+
+def fallback_blueprint():
+    excel_files = collect_excel_file_info()
+    main_file = next((item for item in excel_files if item["columns"]), excel_files[0] if excel_files else None)
+    main_entity = "Record"
+    if main_file:
+        stem = Path(main_file["file"]).stem.replace("_import", "").replace(" import", "")
+        parts = [part for part in re.split(r"[^A-Za-zА-Яа-я0-9]+", stem) if part]
+        if parts:
+            main_entity = "".join(part[:1].upper() + part[1:] for part in parts)
+
+    return {
+        "project_title": "Учебный Django-проект",
+        "main_entity": main_entity,
+        "entities": [
+            {
+                "name": main_entity,
+                "fields": main_file["columns"] if main_file else [],
+                "relations": [],
+            }
+        ],
+        "excel_files": [{"file": item["file"], "model": "", "columns": item["columns"]} for item in excel_files],
+        "pages": [
+            {
+                "url_name": "record_list",
+                "path": "",
+                "view": "RecordListView",
+                "template": "core/record_list.html",
+                "purpose": "список основных записей",
+            }
+        ],
+        "forms": [],
+        "assets": [],
+        "must_have": ["проект должен проходить python manage.py check"],
+    }
+
+
+def normalize_blueprint(data):
+    for asset in data.get("assets", []):
+        if "target" in asset:
+            asset["target"] = normalize_asset_target(asset["target"])
+    return data
+
+
+def get_blueprint(assignment_context):
+    answer = call_yandex(build_blueprint_prompt(assignment_context))
+    save_output("blueprint_raw.md", answer)
+    try:
+        data = extract_json(answer)
+    except ValueError:
+        answer = call_yandex(build_blueprint_retry_prompt(assignment_context, answer))
+        save_output("blueprint_retry_raw.md", answer)
+        try:
+            data = extract_json(answer)
+        except ValueError:
+            data = fallback_blueprint()
+
+    data = normalize_blueprint(data)
+    text = json.dumps(data, ensure_ascii=False, indent=2)
+    save_output("blueprint.md", text)
+    return text
+
+
+def build_generation_context(blueprint):
+    return "\n".join(
+        [
+            "# BLUEPRINT ПРОЕКТА",
+            blueprint,
+            "\n# ЗАДАНИЕ И EXCEL",
+            collect_assignment(),
+            "\n# ОБОЛОЧКА ТЕКУЩЕГО DJANGO-ПРОЕКТА",
+            collect_project_shell(),
+        ]
+    )
+
+
+def find_generated_content(generated_files, path_name):
+    for item in reversed(generated_files or []):
+        if item["path"] == path_name:
+            return item["content"]
+    path = PROJECT_ROOT / path_name
+    if path.exists() and path.is_file():
+        return read_text(path)
+    return ""
+
+
+def has_generated_file(generated_files, path_name):
+    return any(item["path"] == path_name for item in generated_files or [])
+
+
+def generated_template_list(generated_files):
+    paths = []
+    for item in generated_files or []:
+        path_name = item["path"]
+        if path_name.startswith("core/templates/core/") and path_name.endswith(".html"):
+            paths.append(path_name)
+    return "\n".join(f"- {path}" for path in sorted(paths)) or "Шаблоны пока не сгенерированы."
+
+
+def generated_template_url_names(generated_files):
+    result = set()
+    for item in generated_files or []:
+        path_name = item["path"]
+        if path_name.startswith("core/templates/core/") and path_name.endswith(".html"):
+            result.update(extract_url_names_from_templates(item["content"]))
+    return sorted(result)
+
+
+def generated_template_url_note(generated_files):
+    names = generated_template_url_names(generated_files)
+    if not names:
+        return "Сгенерированные шаблоны пока не используют url names."
+    return "\n".join(f"- {name}" for name in names)
+
+
+def build_file_context(base_context, generated_files, path_name, extra_notes=""):
+    models = find_generated_content(generated_files, "core/models.py")
+    forms = find_generated_content(generated_files, "core/forms.py")
+    views = find_generated_content(generated_files, "core/views.py")
+    urls = find_generated_content(generated_files, "config/urls.py")
+    templates = generated_template_list(generated_files)
+    template_url_names = generated_template_url_note(generated_files)
+    if path_name.startswith("core/templates/core/") and not has_generated_file(generated_files, "config/urls.py"):
+        urls = "config/urls.py будет сгенерирован после шаблонов. Используй url_name из BLUEPRINT проекта, а не старые маршруты текущего шаблона."
+
+    if path_name == "core/management/commands/import_data.py":
+        return "\n".join(
+            [
+                "# КОМПАКТНЫЙ КОНТЕКСТ ДЛЯ IMPORT_DATA",
+                base_context.split("# ОБОЛОЧКА ТЕКУЩЕГО DJANGO-ПРОЕКТА", 1)[0],
+                "Текущий проект является шаблоном. Не смешивай старую предметную область с новой.",
+                "Используй только Excel-файлы из блока ниже. Не добавляй импорт старых файлов, которых нет в Excel-обзоре.",
+                "Команда импорта должна быть короткой, простой и идемпотентной: get_or_create/update_or_create.",
+                "Если модель/поле не описаны в core/models.py ниже, не используй их.",
+                "Не импортируй пользователей, заказы, пункты выдачи или старые товары, если таких Excel-файлов нет в новом задании.",
+                collect_excel_overview(),
+                "\n# СГЕНЕРИРОВАННЫЙ core/models.py",
+                models,
+                "\n# ОШИБКИ/ЗАМЕТКИ",
+                extra_notes,
+            ]
+        )
+
+    if path_name == "core/forms.py":
+        return "\n".join(
+            [
+                "# КОМПАКТНЫЙ КОНТЕКСТ ДЛЯ FORMS",
+                base_context.split("# ОБОЛОЧКА ТЕКУЩЕГО DJANGO-ПРОЕКТА", 1)[0],
+                "\n# СГЕНЕРИРОВАННЫЙ core/models.py",
+                models,
+                "\n# ОШИБКИ/ЗАМЕТКИ",
+                extra_notes,
+            ]
+        )
+
+    if path_name == "core/views.py":
+        return "\n".join(
+            [
+                "# КОМПАКТНЫЙ КОНТЕКСТ ДЛЯ VIEWS",
+                "Не сохраняй старые view из шаблона, если они не требуются новым заданием.",
+                "Создавай только view, перечисленные в BLUEPRINT. Не создавай страницы справочников на всякий случай.",
+                base_context.split("# ОБОЛОЧКА ТЕКУЩЕГО DJANGO-ПРОЕКТА", 1)[0],
+                "\n# СГЕНЕРИРОВАННЫЙ core/models.py",
+                models,
+                "\n# СГЕНЕРИРОВАННЫЙ core/forms.py",
+                forms,
+                "\n# ПЛАНИРУЕМЫЕ/СГЕНЕРИРОВАННЫЕ ШАБЛОНЫ",
+                templates,
+                "\n# ОШИБКИ/ЗАМЕТКИ",
+                extra_notes,
+            ]
+        )
+
+    if path_name == "config/urls.py":
+        return "\n".join(
+            [
+                "# КОМПАКТНЫЙ КОНТЕКСТ ДЛЯ URLS",
+                "Импортируй только те view, которые реально есть в core/views.py.",
+                "Добавь login/logout, если base.html или login.html их используют.",
+                "Не удаляй url names, которые уже используют сгенерированные шаблоны.",
+                "\n# URL NAMES ИЗ СГЕНЕРИРОВАННЫХ ШАБЛОНОВ",
+                template_url_names,
+                base_context.split("# ОБОЛОЧКА ТЕКУЩЕГО DJANGO-ПРОЕКТА", 1)[0],
+                "\n# СГЕНЕРИРОВАННЫЙ core/views.py",
+                views,
+                "\n# ОШИБКИ/ЗАМЕТКИ",
+                extra_notes,
+            ]
+        )
+
+    if path_name.startswith("core/templates/core/"):
+        return "\n".join(
+            [
+                "# КОМПАКТНЫЙ КОНТЕКСТ ДЛЯ HTML",
+                "Используй только url name из config/urls.py.",
+                "Шаблоны Django должны расширять {% extends \"core/base.html\" %}, если это не сам base.html.",
+                base_context.split("# ОБОЛОЧКА ТЕКУЩЕГО DJANGO-ПРОЕКТА", 1)[0],
+                "\n# СГЕНЕРИРОВАННЫЙ config/urls.py",
+                urls,
+                "\n# СГЕНЕРИРОВАННЫЙ core/views.py",
+                views,
+                "\n# ОШИБКИ/ЗАМЕТКИ",
+                extra_notes,
+            ]
+        )
+
+    if path_name == "core/models.py":
+        return "\n".join(
+            [
+                "# КОМПАКТНЫЙ КОНТЕКСТ ДЛЯ MODELS",
+                "Полностью адаптируй модели под BLUEPRINT и Excel. Не сохраняй старые модели шаблона, если они не нужны новому заданию.",
+                "Можно оставить User/Role только если нужны авторизация и роли.",
+                base_context.split("# ОБОЛОЧКА ТЕКУЩЕГО DJANGO-ПРОЕКТА", 1)[0],
+                "\n# ОШИБКИ/ЗАМЕТКИ",
+                extra_notes,
+            ]
+        )
+
+    if path_name == "core/admin.py":
+        return "\n".join(
+            [
+                "# КОМПАКТНЫЙ КОНТЕКСТ ДЛЯ ADMIN",
+                "Регистрируй только модели из сгенерированного core/models.py.",
+                base_context.split("# ОБОЛОЧКА ТЕКУЩЕГО DJANGO-ПРОЕКТА", 1)[0],
+                "\n# СГЕНЕРИРОВАННЫЙ core/models.py",
+                models,
+                "\n# ОШИБКИ/ЗАМЕТКИ",
+                extra_notes,
+            ]
+        )
+
+    return build_runtime_context(base_context, generated_files, extra_notes)
 
 
 def build_plan_prompt(context):
@@ -226,14 +791,28 @@ def build_apply_prompt(context):
 Разрешено переписывать только эти файлы и папки:
 {allowed}
 
+Не создавай README.md, docs/*.md и любые другие Markdown-файлы. Нужны только файлы кода, шаблонов, стилей и команды импорта.
+
 Картинки из tools/input можно копировать только в эти папки:
 {asset_targets}
 
+Для assets лучше указывать source как путь из контекста, например "Ресурсы/Мастер пол.ico".
+Если известен только файл, можно указать просто "Мастер пол.ico": скрипт найдет его внутри tools/input.
+Не используй static/icons. Иконки и логотипы клади в static/images.
+
 Не создавай миграции. Пользователь сам выполнит makemigrations и migrate.
 Не добавляй комментарии в код без необходимости.
+Не добавляй комментарии в код вообще, кроме стандартных комментариев Django, если они уже есть в файле.
 Не меняй секреты, пароли и API-ключи.
+Не меняй DATABASES, SECRET_KEY, DEBUG, ALLOWED_HOSTS и настройки подключения к PostgreSQL.
 Не используй сложные универсальные конфиги.
 Сохраняй стиль простого Django-кода: models, forms, views, templates, management command.
+Если новое задание меняет предметную область, замени старые сущности шаблона на новые. Не смешивай старую и новую предметные области.
+Excel-файлы из tools/input являются главным источником для моделей и импорта.
+Технические имена в коде пиши латиницей, видимые пользователю тексты интерфейса пиши на русском.
+Не создавай страницы для Supplier, Manufacturer, Category, Unit, PickupPoint, OrderStatus, Product, Order, если они не указаны в BLUEPRINT проекта.
+Обязательно включи core/templates/core/base.html, если меняешь urls.py, views.py или основные шаблоны.
+Обязательно включи core/templates/core/login.html, если в base.html или urls.py есть вход пользователя.
 
 Ответ верни строго в JSON без Markdown:
 {{
@@ -255,9 +834,89 @@ def build_apply_prompt(context):
 }}
 
 В files включай только те файлы, которые реально надо заменить.
+В files нельзя указывать папку. Если надо изменить шаблоны, указывай конкретные HTML-файлы, например:
+- core/templates/core/partner_list.html
+- core/templates/core/partner_form.html
+- core/templates/core/partner_history.html
 В assets включай только картинки, которые нужно скопировать из tools/input в проект. source - путь относительно tools/input. target - путь относительно корня Django-проекта.
 Если картинки не нужны, верни пустой список assets.
 
+{context}
+""".strip()
+
+
+def build_folder_files_prompt(context, folder_name, reason):
+    return f"""
+Ты выбрал папку вместо конкретных файлов. Нужно заменить это на список конкретных файлов.
+
+Папка:
+{folder_name}
+
+Зачем нужны файлы:
+{reason}
+
+Правила:
+- верни только JSON без Markdown;
+- в files указывай только конкретные файлы, не папки;
+- все пути должны начинаться с "{folder_name.rstrip('/')}/";
+- для Django-шаблонов используй расширение .html;
+- файлов должно быть немного, только самые необходимые для задания.
+
+Формат:
+{{
+  "files": [
+    {{
+      "path": "{folder_name.rstrip('/')}/example.html",
+      "reason": "зачем нужен файл"
+    }}
+  ]
+}}
+
+{context}
+""".strip()
+
+
+def build_repair_prompt(context, error_text):
+    allowed = "\n".join(f"- {path}" for path in ALLOWED_PATHS)
+    return f"""
+После автоматического изменения проекта команда проверки Django упала.
+Нужно выбрать минимальный список файлов, которые надо исправить.
+Не пиши полный код файлов на этом шаге.
+
+Разрешено переписывать только эти файлы и папки:
+{allowed}
+
+Правила:
+- исправляй причину ошибки, а не только первую строку traceback;
+- проверь согласованность urls.py, views.py, forms.py, models.py и templates;
+- если в urls.py импортируется класс, он обязан существовать во views.py;
+- если view использует template_name, такой шаблон обязан быть создан;
+- если форма использует модель и поля, они обязаны существовать в models.py;
+- если import_data.py записывает поля модели, эти поля обязаны существовать;
+- не создавай миграции;
+- не меняй секреты и API-ключи;
+- не меняй DATABASES, SECRET_KEY, DEBUG, ALLOWED_HOSTS и настройки подключения к PostgreSQL;
+- в files указывай только конкретные файлы, не папки.
+- не добавляй README.md, docs/*.md и любые другие Markdown-файлы.
+
+Ответ верни строго в JSON без Markdown:
+{{
+  "summary": "кратко что исправлено",
+  "steps": ["что проверить после исправления"],
+  "commands": ["команды после исправления"],
+  "files": [
+    {{
+      "path": "core/views.py",
+      "reason": "зачем менять этот файл"
+    }}
+  ],
+  "assets": []
+}}
+
+Ошибка проверки:
+{error_text}
+
+Контекст проекта:
 {context}
 """.strip()
 
@@ -278,7 +937,18 @@ def build_file_prompt(context, path_name, reason):
 - не добавляй лишних абстракций;
 - не создавай миграции;
 - не меняй API-ключи и пароли;
+- не меняй настройки подключения к базе данных;
 - не добавляй комментарии без необходимости;
+- не добавляй комментарии в код вообще;
+- используй уже сгенерированные файлы из контекста как источник правды;
+- технические имена классов, функций, переменных, url_name и файлов пиши латиницей;
+- видимые пользователю заголовки, кнопки и сообщения пиши на русском;
+- если пишешь config/urls.py, импортируй только те view-классы или функции, которые реально есть в core/views.py;
+- если пишешь core/views.py, template_name должен ссылаться на реально существующий или генерируемый шаблон;
+- если пишешь core/forms.py, поля формы должны существовать в модели из core/models.py;
+- если пишешь import_data.py, не записывай поля, которых нет в моделях;
+- если пишешь import_data.py, используй только Excel-файлы из текущего задания и делай файл максимально коротким;
+- не смешивай старые сущности шаблона с новой предметной областью;
 - если это HTML, верни полный HTML-шаблон;
 - если это Python, верни полный Python-файл.
 
@@ -293,9 +963,92 @@ def build_file_prompt(context, path_name, reason):
 """.strip()
 
 
+def build_file_retry_prompt(context, path_name, reason, previous_answer):
+    truncated_note = ""
+    if "===END===" not in previous_answer:
+        truncated_note = (
+            "Предыдущий ответ был обрезан или не содержал ===END===. "
+            "Сделай файл короче. Убери поддержку старых Excel-файлов и старых сущностей шаблона, если их нет в текущем задании."
+        )
+    return f"""
+Нужно вернуть полный текст файла Django-проекта.
+Предыдущий ответ не подошел, потому что в нем не было обязательных маркеров.
+{truncated_note}
+
+Файл:
+{path_name}
+
+Зачем он меняется:
+{reason}
+
+Верни ответ строго в таком формате:
+===FILE:{path_name}===
+полный текст файла без Markdown
+===END===
+
+Не добавляй пояснения. Не используй Markdown. Не отказывайся от ответа: это обычный учебный Django-код.
+Если файл большой, выбери минимальное простое решение, которое проходит Django check.
+
+Предыдущий неправильный ответ:
+{previous_answer[:2000]}
+
+Контекст:
+{context}
+""".strip()
+
+
+def build_consistency_repair_prompt(context, errors):
+    allowed = "\n".join(f"- {path}" for path in ALLOWED_PATHS)
+    return f"""
+Сгенерированные файлы Django-проекта не согласованы между собой.
+Нужно выбрать минимальный список файлов, которые надо перегенерировать.
+Не пиши полный код файлов на этом шаге.
+
+Разрешено менять только:
+{allowed}
+
+Правила:
+- если urls.py импортирует отсутствующие view, обычно исправляй urls.py под реальные views, а не добавляй старые классы;
+- если view ссылается на отсутствующий шаблон, добавь конкретный HTML-файл или исправь template_name;
+- если шаблон использует неизвестный url name, исправь шаблон или urls.py;
+- если форма использует поля, которых нет в модели, исправь форму или модель;
+- если import_data.py пишет в поля, которых нет в модели, исправь import_data.py или модель;
+- в files указывай только конкретные файлы, не папки;
+- не меняй DATABASES, SECRET_KEY, DEBUG, ALLOWED_HOSTS и настройки PostgreSQL.
+
+Ответ верни строго в JSON без Markdown:
+{{
+  "summary": "кратко что надо исправить",
+  "steps": ["что проверить"],
+  "commands": ["команды после применения"],
+  "files": [
+    {{
+      "path": "config/urls.py",
+      "reason": "зачем перегенерировать этот файл"
+    }}
+  ],
+  "assets": []
+}}
+
+Ошибки согласованности:
+{errors}
+
+Контекст:
+{context}
+""".strip()
+
+
 def collect_output_notes():
     parts = []
-    for name in ("plan.md", "apply_report.md", "apply_manifest_response.md"):
+    for name in (
+        "blueprint.md",
+        "plan.md",
+        "apply_report.md",
+        "apply_manifest_response.md",
+        "consistency_errors_final.md",
+        "check_after_apply.md",
+        "manual_check.md",
+    ):
         path = OUTPUT_DIR / name
         if path.exists():
             parts.append(f"\n\n===== ФАЙЛ OUTPUT: {name} =====")
@@ -303,9 +1056,85 @@ def collect_output_notes():
     return "\n".join(parts) or "Файлов с предыдущими ответами пока нет."
 
 
+def question_file_candidates(question):
+    names = set()
+    suffixes = "py|html|css|csv|json|xml|sql|txt|md"
+    patterns = [
+        rf"`([^`]+?\.(?:{suffixes}))`",
+        rf'"([^"]+?\.(?:{suffixes}))"',
+        rf"'([^']+?\.(?:{suffixes}))'",
+        rf"[A-Za-z]:[\\/][^\r\n\"'<>|]*?\.(?:{suffixes})",
+        rf"[\wА-Яа-яЁё./\\:-]+?\.(?:{suffixes})",
+    ]
+    for pattern in patterns:
+        for match in re.findall(pattern, question or "", flags=re.IGNORECASE):
+            if isinstance(match, tuple):
+                match = next((part for part in match if part), "")
+            name = match.strip(".,;:!?\"'`()[]{} ")
+            if name:
+                names.add(name)
+
+    result = []
+    for name in sorted(names, key=len, reverse=True):
+        normalized = normalize_match(name)
+        if any(normalize_match(current).endswith(normalized) for current in result):
+            continue
+        result.append(name)
+    return sorted(result)
+
+
+def resolve_question_file(name):
+    normalized = normalize_relative_path(name)
+    candidates = []
+    direct = Path(name)
+    if direct.is_absolute():
+        candidates.append(direct)
+
+    if normalized.startswith("tools/output/"):
+        candidates.append(PROJECT_ROOT / normalized)
+    elif normalized.startswith("output/"):
+        candidates.append(TOOL_DIR / normalized)
+    elif "/" in normalized:
+        candidates.append(PROJECT_ROOT / normalized)
+        candidates.append(TOOL_DIR / normalized)
+    else:
+        candidates.append(OUTPUT_DIR / normalized)
+        candidates.append(PROJECT_ROOT / normalized)
+        candidates.extend(OUTPUT_DIR.rglob(normalized))
+
+    for path in candidates:
+        try:
+            resolved = path.resolve()
+        except OSError:
+            continue
+        if not resolved.exists() or not resolved.is_file():
+            continue
+        if not (is_inside(PROJECT_ROOT, resolved) or is_inside(TOOL_DIR, resolved)):
+            continue
+        if resolved.suffix.lower() not in TEXT_EXTENSIONS:
+            continue
+        return resolved
+    return None
+
+
+def collect_question_files(question):
+    parts = []
+    seen = set()
+    for name in question_file_candidates(question)[:12]:
+        path = resolve_question_file(name)
+        if not path or path in seen:
+            continue
+        seen.add(path)
+        label = path.relative_to(PROJECT_ROOT).as_posix() if is_inside(PROJECT_ROOT, path) else path.name
+        parts.append(f"\n\n===== ФАЙЛ ИЗ ВОПРОСА: {label} =====")
+        parts.append(read_text(path)[:30000])
+    return "\n".join(parts) or "В вопросе не указаны конкретные файлы или они не найдены."
+
+
 def build_question_prompt(context, question, history):
     history_text = "\n".join(history[-8:]) if history else "Истории диалога пока нет."
     notes = collect_output_notes()
+    question_files = collect_question_files(question)
     return f"""
 Ты отвечаешь на вопросы по простому Django-проекту для экзамена.
 Отвечай по-русски, коротко и практически.
@@ -324,6 +1153,9 @@ def build_question_prompt(context, question, history):
 Предыдущие ответы инструмента:
 {notes}
 
+Файлы, явно названные в вопросе:
+{question_files}
+
 История текущего чата:
 {history_text}
 
@@ -340,12 +1172,18 @@ def call_yandex(prompt):
     folder_id = local_config.get("YC_FOLDER_ID")
     model_name = local_config.get("YC_MODEL", "yandexgpt")
     model_version = local_config.get("YC_MODEL_VERSION", "rc")
+    api_mode = local_config.get("YC_API_MODE", "sdk")
     temperature = float(local_config.get("YC_TEMPERATURE", "0.2"))
 
     if not api_key or not folder_id:
         raise RuntimeError("Заполни YC_API_KEY и YC_FOLDER_ID в tools/local_config.json")
     if "/folders/" in folder_id:
         folder_id = folder_id.rstrip("/").split("/folders/", 1)[1].split("?", 1)[0]
+
+    if api_mode == "openai" or model_name.lower().startswith("qwen") or model_name.startswith("gpt://"):
+        if model_version == "rc":
+            model_version = "latest"
+        return call_yandex_openai(prompt, api_key, folder_id, model_name, model_version, temperature)
 
     sdk = AIStudio(folder_id=folder_id, auth=api_key)
     try:
@@ -355,6 +1193,39 @@ def call_yandex(prompt):
     model = model.configure(temperature=temperature)
     result = model.run(prompt)
     return result[0].text
+
+
+def call_yandex_openai(prompt, api_key, folder_id, model_name, model_version, temperature):
+    if model_name.startswith("gpt://"):
+        model_uri = model_name
+    else:
+        model_uri = f"gpt://{folder_id}/{model_name}/{model_version}"
+
+    body = json.dumps(
+        {
+            "model": model_uri,
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": temperature,
+        }
+    ).encode("utf-8")
+    request = urllib.request.Request(
+        "https://llm.api.cloud.yandex.net/v1/chat/completions",
+        data=body,
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "OpenAI-Project": folder_id,
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=180) as response:
+            data = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as error:
+        details = error.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"Ошибка Yandex OpenAI-compatible API: {error.code} {details}") from error
+
+    return data["choices"][0]["message"]["content"]
 
 
 def extract_json(text):
@@ -370,7 +1241,7 @@ def extract_json(text):
         return json.loads(cleaned[start : end + 1])
     except json.JSONDecodeError as error:
         raise ValueError(
-            "AI вернул невалидный JSON. "
+            "вернул невалидный JSON. "
             f"Строка {error.lineno}, столбец {error.colno}. "
             "Сырой ответ сохранен в tools/output/last_response.md"
         ) from error
@@ -381,16 +1252,50 @@ def extract_file_content(text, path_name):
     end_marker = "===END==="
     start = text.find(start_marker)
     if start == -1:
-        raise ValueError(f"AI не вернул начало файла {path_name}. Сырой ответ сохранен в tools/output/last_response.md")
+        fenced = re.findall(r"```(?:python|html|css|text)?\s*(.*?)\s*```", text, re.DOTALL)
+        if len(fenced) == 1:
+            return fenced[0].strip()
+        raise ValueError(f"не вернул начало файла {path_name}. Сырой ответ сохранен в tools/output/last_response.md")
     start += len(start_marker)
     end = text.find(end_marker, start)
     if end == -1:
-        raise ValueError(f"AI не вернул конец файла {path_name}. Сырой ответ сохранен в tools/output/last_response.md")
+        raise ValueError(f"не вернул конец файла {path_name}. Сырой ответ сохранен в tools/output/last_response.md")
     return text[start:end].strip()
+
+
+def remove_python_comments(content):
+    lines = []
+    for line in content.splitlines():
+        stripped = line.lstrip()
+        if stripped.startswith("#"):
+            continue
+        lines.append(line.rstrip())
+    return "\n".join(lines).strip() + "\n"
+
+
+def remove_html_comments(content):
+    return re.sub(r"\s*<!--.*?-->\s*", "\n", content, flags=re.DOTALL).strip() + "\n"
+
+
+def remove_css_comments(content):
+    return re.sub(r"/\*.*?\*/", "", content, flags=re.DOTALL).strip() + "\n"
+
+
+def clean_generated_content(path_name, content):
+    suffix = Path(path_name).suffix.lower()
+    if suffix == ".py":
+        return remove_python_comments(content)
+    if suffix == ".html":
+        return remove_html_comments(content)
+    if suffix == ".css":
+        return remove_css_comments(content)
+    return content.strip() + "\n"
 
 
 def is_allowed(relative_path):
     normalized = Path(relative_path).as_posix().lstrip("/")
+    if is_blocked_generated_path(normalized):
+        return False
     if ".." in Path(normalized).parts:
         return False
     for allowed in ALLOWED_PATHS:
@@ -398,6 +1303,37 @@ def is_allowed(relative_path):
         if normalized == allowed or normalized.startswith(f"{allowed}/"):
             return True
     return False
+
+
+def is_allowed_folder(relative_path):
+    normalized = normalize_relative_path(relative_path).rstrip("/")
+    if ".." in Path(normalized).parts:
+        return False
+    return any(normalized == Path(folder).as_posix().rstrip("/") for folder in PROJECT_FOLDERS)
+
+
+def looks_like_folder(relative_path):
+    normalized = normalize_relative_path(relative_path).rstrip("/")
+    if is_allowed_folder(normalized):
+        return True
+    target = PROJECT_ROOT / normalized
+    return target.exists() and target.is_dir()
+
+
+def validate_file_path(path_name):
+    normalized = normalize_relative_path(path_name)
+    path = Path(normalized)
+    if not normalized or path.is_absolute() or ".." in path.parts:
+        raise ValueError(f"Некорректный путь файла: {path_name}")
+    if is_blocked_generated_path(normalized):
+        raise ValueError(f"Markdown и документация не генерируются: {normalized}")
+    if looks_like_folder(normalized):
+        raise ValueError(f"Модель указала папку вместо файла: {normalized}")
+    if path.suffix.lower() not in TEXT_EXTENSIONS:
+        raise ValueError(f"У файла должно быть текстовое расширение: {normalized}")
+    if not is_allowed(normalized):
+        raise ValueError(f"Запрещенный путь для записи: {normalized}")
+    return normalized
 
 
 def is_asset_target_allowed(relative_path):
@@ -411,20 +1347,84 @@ def is_asset_target_allowed(relative_path):
     return False
 
 
+def list_input_assets():
+    return sorted(
+        path
+        for path in INPUT_DIR.rglob("*")
+        if path.is_file() and path.suffix.lower() in ASSET_EXTENSIONS
+    )
+
+
+def format_asset_options(paths):
+    return ", ".join(path.relative_to(INPUT_DIR).as_posix() for path in paths[:12])
+
+
+def find_input_asset(source_name):
+    source_name = normalize_relative_path(source_name)
+    source_path = Path(source_name)
+    if not source_name or source_path.is_absolute() or ".." in source_path.parts:
+        raise ValueError(f"Некорректный путь картинки: {source_name}")
+
+    direct = (INPUT_DIR / source_path).resolve()
+    if is_inside(INPUT_DIR, direct) and direct.exists() and direct.is_file():
+        return direct
+
+    assets = list_input_assets()
+    requested_path = normalize_match(source_name)
+    requested_name = normalize_match(source_path.name)
+    requested_stem = normalize_match(source_path.stem)
+
+    matches = [
+        path
+        for path in assets
+        if normalize_match(path.relative_to(INPUT_DIR).as_posix()) == requested_path
+    ]
+    if not matches:
+        matches = [path for path in assets if normalize_match(path.name) == requested_name]
+    if not matches and source_path.suffix == "":
+        matches = [path for path in assets if normalize_match(path.stem) == requested_stem]
+
+    if not matches:
+        options = format_asset_options(assets)
+        if options:
+            raise ValueError(f"Картинка не найдена в input: {source_name}. Доступные картинки: {options}")
+        raise ValueError(f"Картинка не найдена в input: {source_name}. В tools/input нет картинок.")
+
+    if len(matches) > 1:
+        suffix = source_path.suffix.lower()
+        if suffix:
+            same_suffix = [path for path in matches if path.suffix.lower() == suffix]
+            if len(same_suffix) == 1:
+                return same_suffix[0]
+            if same_suffix:
+                matches = same_suffix
+        raise ValueError(
+            "Найдено несколько картинок с похожим именем. "
+            f"Укажи точный путь из input: {format_asset_options(matches)}"
+        )
+
+    return matches[0]
+
+
 def write_files(data):
     timestamp = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
     backup_root = BACKUP_DIR / timestamp
     changed = []
+
+    prepared = []
     for item in data.get("files", []):
-        path_name = item.get("path", "")
+        path_name = validate_file_path(item.get("path", ""))
         content = item.get("content")
         if not path_name or content is None:
             continue
-        if not is_allowed(path_name):
-            raise ValueError(f"Запрещенный путь для записи: {path_name}")
         target = (PROJECT_ROOT / path_name).resolve()
-        if PROJECT_ROOT.resolve() not in target.parents and target != PROJECT_ROOT.resolve():
+        if not is_inside(PROJECT_ROOT, target):
             raise ValueError(f"Путь вышел за пределы проекта: {path_name}")
+        if target.exists() and target.is_dir():
+            raise ValueError(f"Нельзя записать файл поверх папки: {path_name}")
+        prepared.append((path_name, content, target))
+
+    for path_name, content, target in prepared:
         if target.exists():
             backup = backup_root / path_name
             backup.parent.mkdir(parents=True, exist_ok=True)
@@ -438,18 +1438,18 @@ def write_files(data):
 def validate_assets(data):
     assets = []
     for item in data.get("assets", []):
-        source_name = item.get("source", "")
-        target_name = item.get("target", "")
+        source_name = normalize_relative_path(item.get("source", ""))
+        target_name = normalize_asset_target(item.get("target", ""))
         if not source_name or not target_name:
             continue
-        source = (INPUT_DIR / source_name).resolve()
+
+        source = find_input_asset(source_name)
+        if Path(target_name).suffix == "":
+            target_name = f"{target_name.rstrip('/')}/{source.name}"
+
         target = (PROJECT_ROOT / target_name).resolve()
-        if INPUT_DIR.resolve() not in source.parents:
-            raise ValueError(f"Путь картинки вышел за пределы input: {source_name}")
-        if PROJECT_ROOT.resolve() not in target.parents:
+        if not is_inside(PROJECT_ROOT, target):
             raise ValueError(f"Путь картинки вышел за пределы проекта: {target_name}")
-        if not source.exists():
-            raise ValueError(f"Картинка не найдена в input: {source_name}")
         if source.suffix.lower() not in ASSET_EXTENSIONS:
             raise ValueError(f"Файл не является разрешенной картинкой: {source_name}")
         if not is_asset_target_allowed(target_name):
@@ -471,30 +1471,503 @@ def copy_assets(assets, backup_root):
     return copied
 
 
+def run_project_command(command, timeout=180):
+    env = os.environ.copy()
+    env.pop("VIRTUAL_ENV", None)
+    completed = subprocess.run(
+        command,
+        cwd=PROJECT_ROOT,
+        env=env,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        capture_output=True,
+        timeout=timeout,
+    )
+    output = "\n".join(part for part in (completed.stdout, completed.stderr) if part.strip())
+    return completed.returncode == 0, output.strip()
+
+
+def validate_project():
+    commands = [
+        ["uv", "run", "python", "-m", "py_compile", "core/models.py", "core/forms.py", "core/views.py", "core/management/commands/import_data.py", "config/urls.py"],
+        ["uv", "run", "python", "manage.py", "check"],
+    ]
+    report = []
+    for command in commands:
+        command_text = " ".join(command)
+        log(f"Проверяю: {command_text}")
+        ok, output = run_project_command(command)
+        report.append(f"$ {command_text}\n{output or 'OK'}")
+        if not ok:
+            return False, "\n\n".join(report)
+    return True, "\n\n".join(report)
+
+
 def safe_output_name(path_name):
     return re.sub(r"[^A-Za-z0-9_.-]+", "_", path_name.replace("/", "_").replace("\\", "_"))
+
+
+def file_order_key(item):
+    path_name = item["path"] if isinstance(item, dict) else item
+    for index, prefix in enumerate(GENERATION_ORDER):
+        if path_name == prefix or path_name.startswith(f"{prefix}/"):
+            return index
+    return len(GENERATION_ORDER)
+
+
+def sort_file_items(files):
+    return sorted(files, key=lambda item: (file_order_key(item), item["path"]))
+
+
+def filter_generated_files(files):
+    result = []
+    for item in files or []:
+        path_name = normalize_relative_path(item.get("path", ""))
+        if not path_name:
+            continue
+        if is_blocked_generated_path(path_name):
+            log(f"Пропускаю документацию из генерации: {path_name}")
+            continue
+        result.append(item)
+    return result
+
+
+def ensure_core_files(manifest):
+    files = filter_generated_files(manifest.get("files", []))
+    paths = {normalize_relative_path(item.get("path", "")) for item in files}
+    required = [
+        "core/models.py",
+        "core/forms.py",
+        "core/views.py",
+        "config/urls.py",
+        "core/admin.py",
+        "core/management/commands/import_data.py",
+    ]
+    for path_name in required:
+        if path_name not in paths:
+            files.append(
+                {
+                    "path": path_name,
+                    "reason": "обязательный файл логики проекта, должен быть согласован с новым заданием",
+                }
+            )
+            paths.add(path_name)
+    manifest["files"] = files
+    return manifest
+
+
+def ensure_blueprint_templates(manifest, blueprint_text):
+    try:
+        blueprint = json.loads(blueprint_text)
+    except json.JSONDecodeError:
+        return manifest
+
+    files = filter_generated_files(manifest.get("files", []))
+    paths = {normalize_relative_path(item.get("path", "")) for item in files}
+    for page in blueprint.get("pages", []):
+        template = normalize_relative_path(page.get("template", ""))
+        if not template:
+            continue
+        if not template.startswith("core/templates/core/") or not template.endswith(".html"):
+            continue
+        if template in paths:
+            continue
+        files.append(
+            {
+                "path": template,
+                "reason": "шаблон страницы из blueprint проекта",
+            }
+        )
+        paths.add(template)
+
+    manifest["files"] = files
+    return manifest
+
+
+def ensure_support_files(manifest):
+    files = filter_generated_files(manifest.get("files", []))
+    paths = {normalize_relative_path(item.get("path", "")) for item in files}
+    touches_interface = any(
+        path in paths or any(current.startswith(f"{path}/") for current in paths)
+        for path in ("core/views.py", "config/urls.py", "core/templates/core")
+    )
+    if touches_interface and "core/templates/core/base.html" not in paths:
+        files.append(
+            {
+                "path": "core/templates/core/base.html",
+                "reason": "обновить базовый шаблон под новые url names и новую предметную область",
+            }
+        )
+    if touches_interface and "core/templates/core/login.html" not in paths:
+        files.append(
+            {
+                "path": "core/templates/core/login.html",
+                "reason": "согласовать страницу входа с новыми маршрутами проекта",
+            }
+        )
+    manifest["files"] = files
+    return manifest
+
+
+def generated_map(data):
+    return {item["path"]: item["content"] for item in data.get("files", [])}
+
+
+def read_project_or_generated(data, path_name):
+    current = generated_map(data)
+    if path_name in current:
+        return current[path_name]
+    path = PROJECT_ROOT / path_name
+    if path.exists() and path.is_file():
+        return read_text(path)
+    return ""
+
+
+def generated_template_paths(data):
+    paths = set()
+    for item in data.get("files", []):
+        path_name = item["path"]
+        if path_name.startswith("core/templates/core/") and path_name.endswith(".html"):
+            paths.add(path_name)
+    for path_name in ("core/templates/core/base.html", "core/templates/core/login.html"):
+        if (PROJECT_ROOT / path_name).exists():
+            paths.add(path_name)
+    return paths
+
+
+def parse_python(content, path_name, errors):
+    if not content.strip():
+        return None
+    try:
+        return ast.parse(content, filename=path_name)
+    except SyntaxError as error:
+        errors.append(f"{path_name}: синтаксическая ошибка Python: {error.msg}, строка {error.lineno}")
+        return None
+
+
+def call_name(node):
+    if isinstance(node, ast.Call):
+        function = node.func
+        if isinstance(function, ast.Attribute):
+            return function.attr
+        if isinstance(function, ast.Name):
+            return function.id
+    return ""
+
+
+def extract_python_names(tree):
+    if tree is None:
+        return set()
+    names = set()
+    for node in tree.body:
+        if isinstance(node, (ast.ClassDef, ast.FunctionDef)):
+            names.add(node.name)
+    return names
+
+
+def extract_model_fields(tree):
+    fields = {}
+    if tree is None:
+        return fields
+    for node in tree.body:
+        if not isinstance(node, ast.ClassDef):
+            continue
+        current = {"id"}
+        for statement in node.body:
+            if isinstance(statement, ast.Assign) and call_name(statement.value) in MODEL_FIELD_TYPES:
+                for target in statement.targets:
+                    if isinstance(target, ast.Name):
+                        current.add(target.id)
+            if isinstance(statement, ast.AnnAssign) and isinstance(statement.target, ast.Name):
+                current.add(statement.target.id)
+        if len(current) > 1:
+            fields[node.name] = current
+    return fields
+
+
+def extract_form_models_and_fields(tree):
+    forms = []
+    if tree is None:
+        return forms
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.ClassDef):
+            continue
+        for child in node.body:
+            if not isinstance(child, ast.ClassDef) or child.name != "Meta":
+                continue
+            model_name = ""
+            fields = []
+            for statement in child.body:
+                if not isinstance(statement, ast.Assign):
+                    continue
+                targets = [target.id for target in statement.targets if isinstance(target, ast.Name)]
+                if "model" in targets and isinstance(statement.value, ast.Name):
+                    model_name = statement.value.id
+                if "fields" in targets and isinstance(statement.value, (ast.List, ast.Tuple)):
+                    fields = [item.value for item in statement.value.elts if isinstance(item, ast.Constant) and isinstance(item.value, str)]
+            if model_name and fields:
+                forms.append((node.name, model_name, fields))
+    return forms
+
+
+def extract_update_or_create_fields(tree):
+    writes = []
+    if tree is None:
+        return writes
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        function = node.func
+        if not isinstance(function, ast.Attribute) or function.attr != "update_or_create":
+            continue
+        owner = function.value
+        if not isinstance(owner, ast.Attribute) or owner.attr != "objects":
+            continue
+        if not isinstance(owner.value, ast.Name):
+            continue
+        model_name = owner.value.id
+        defaults = next((keyword.value for keyword in node.keywords if keyword.arg == "defaults"), None)
+        if isinstance(defaults, ast.Dict):
+            fields = [key.value for key in defaults.keys if isinstance(key, ast.Constant) and isinstance(key.value, str)]
+            writes.append((model_name, fields))
+    return writes
+
+
+def extract_url_names_from_urls(content):
+    return set(re.findall(r"name\s*=\s*[\"']([^\"']+)[\"']", content))
+
+
+def extract_url_names_from_templates(content):
+    return set(re.findall(r"{%\s*url\s+[\"']([^\"']+)[\"']", content))
+
+
+def extract_url_names_from_python(content):
+    patterns = [
+        r"reverse_lazy\(\s*[\"']([^\"']+)[\"']",
+        r"reverse\(\s*[\"']([^\"']+)[\"']",
+        r"redirect\(\s*[\"']([^\"']+)[\"']",
+    ]
+    result = set()
+    for pattern in patterns:
+        result.update(re.findall(pattern, content))
+    return result
+
+
+def check_generated_consistency(data):
+    errors = []
+    python_trees = {}
+    for path_name in CORE_GENERATION_FILES:
+        content = read_project_or_generated(data, path_name)
+        if content:
+            python_trees[path_name] = parse_python(content, path_name, errors)
+
+    urls_content = read_project_or_generated(data, "config/urls.py")
+    views_content = read_project_or_generated(data, "core/views.py")
+    models_tree = python_trees.get("core/models.py")
+    forms_tree = python_trees.get("core/forms.py")
+    views_tree = python_trees.get("core/views.py")
+    import_tree = python_trees.get("core/management/commands/import_data.py")
+
+    view_names = extract_python_names(views_tree)
+    urls_tree = python_trees.get("config/urls.py")
+    if urls_tree is not None:
+        for node in ast.walk(urls_tree):
+            if isinstance(node, ast.ImportFrom) and node.module == "core.views":
+                for alias in node.names:
+                    if alias.name not in view_names:
+                        errors.append(f"config/urls.py импортирует {alias.name}, но такого класса/функции нет в core/views.py")
+
+    url_names = extract_url_names_from_urls(urls_content)
+    for path_name in generated_template_paths(data):
+        content = read_project_or_generated(data, path_name)
+        for name in extract_url_names_from_templates(content):
+            if name not in url_names:
+                errors.append(f"{path_name} использует url '{name}', но такого name нет в config/urls.py")
+
+    for name in extract_url_names_from_python(views_content):
+        if name not in url_names:
+            errors.append(f"core/views.py использует url '{name}', но такого name нет в config/urls.py")
+
+    template_paths = generated_template_paths(data)
+    for template_name in re.findall(r"template_name\s*=\s*[\"']core/([^\"']+)[\"']", views_content):
+        path_name = f"core/templates/core/{template_name}"
+        if path_name not in template_paths and not (PROJECT_ROOT / path_name).exists():
+            errors.append(f"core/views.py ссылается на шаблон {path_name}, но файла нет")
+
+    model_fields = extract_model_fields(models_tree)
+    model_names = set(model_fields)
+    form_names = extract_python_names(forms_tree)
+    for path_name, tree in python_trees.items():
+        if tree is None:
+            continue
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.ImportFrom):
+                continue
+            if node.module == "models" and node.level == 1:
+                for alias in node.names:
+                    if alias.name not in model_names:
+                        errors.append(f"{path_name} импортирует модель {alias.name}, но ее нет в core/models.py")
+            if node.module == "forms" and node.level == 1:
+                for alias in node.names:
+                    if alias.name not in form_names:
+                        errors.append(f"{path_name} импортирует форму {alias.name}, но ее нет в core/forms.py")
+
+    for form_name, model_name, fields in extract_form_models_and_fields(forms_tree):
+        if model_name not in model_fields:
+            errors.append(f"{form_name} использует модель {model_name}, но она не найдена в core/models.py")
+            continue
+        for field in fields:
+            if field not in model_fields[model_name]:
+                errors.append(f"{form_name} использует поле {model_name}.{field}, но такого поля нет в core/models.py")
+
+    for model_name, fields in extract_update_or_create_fields(import_tree):
+        if model_name not in model_fields:
+            continue
+        for field in fields:
+            if field not in model_fields[model_name]:
+                errors.append(f"import_data.py записывает поле {model_name}.{field}, но такого поля нет в core/models.py")
+
+    for path_name in generated_template_paths(data):
+        content = read_project_or_generated(data, path_name)
+        if re.search(r"{%\s*extends\s+[\"']base\.html[\"']\s*%}", content):
+            errors.append(f"{path_name} расширяет base.html, нужно использовать core/base.html")
+
+    return errors
+
+
+def replace_generated_files(data, fixes):
+    current = {item["path"]: item for item in data.get("files", [])}
+    for item in fixes.get("files", []):
+        current[item["path"]] = item
+    data["files"] = sort_file_items(list(current.values()))
+    return data
+
+
+def expand_manifest_file_items(context, files):
+    expanded = []
+    for item in filter_generated_files(files):
+        path_name = normalize_relative_path(item.get("path", ""))
+        reason = item.get("reason", "")
+        if not path_name:
+            continue
+
+        if looks_like_folder(path_name):
+            log(f"Уточняю файлы внутри папки: {path_name}")
+            answer = call_yandex(build_folder_files_prompt(context, path_name, reason))
+            save_output("last_response.md", answer)
+            save_output(f"response_folder_{safe_output_name(path_name)}.md", answer)
+            data = extract_json(answer)
+            for child in filter_generated_files(data.get("files", [])):
+                child_path = validate_file_path(child.get("path", ""))
+                child_reason = child.get("reason") or reason
+                expanded.append({"path": child_path, "reason": child_reason})
+            continue
+
+        path_name = validate_file_path(path_name)
+        expanded.append({"path": path_name, "reason": reason})
+
+    unique = []
+    seen = set()
+    for item in expanded:
+        if item["path"] in seen:
+            continue
+        seen.add(item["path"])
+        unique.append(item)
+    return unique
 
 
 def build_full_change_set(context, manifest):
     result = dict(manifest)
     result["files"] = []
-    files = manifest.get("files", [])
+    files = sort_file_items(filter_generated_files(manifest.get("files", [])))
     total = len(files)
+    order_note = "Файлы текущего apply в порядке генерации:\n" + "\n".join(f"- {item['path']}" for item in files)
     for index, item in enumerate(files, start=1):
         path_name = item.get("path", "")
         reason = item.get("reason", "")
         if not path_name:
             continue
-        if not is_allowed(path_name):
-            raise ValueError(f"Запрещенный путь для записи: {path_name}")
+        path_name = validate_file_path(path_name)
         percent = 30 + round(index / max(total, 1) * 50)
-        log(f"AI генерирует файл {index}/{total}: {path_name}", percent)
-        answer = call_yandex(build_file_prompt(context, path_name, reason))
+        log(f"генерирует файл {index}/{total}: {path_name}", percent)
+        runtime_context = build_file_context(context, result["files"], path_name, order_note)
+        answer = call_yandex(build_file_prompt(runtime_context, path_name, reason))
         save_output("last_response.md", answer)
         save_output(f"response_{safe_output_name(path_name)}.md", answer)
-        content = extract_file_content(answer, path_name)
+        try:
+            content = extract_file_content(answer, path_name)
+        except ValueError:
+            log(f"Повторяю генерацию файла без лишнего текста: {path_name}")
+            retry_context = build_file_context(context, result["files"], path_name, order_note)
+            answer = call_yandex(build_file_retry_prompt(retry_context, path_name, reason, answer))
+            save_output("last_response.md", answer)
+            save_output(f"response_retry_{safe_output_name(path_name)}.md", answer)
+            content = extract_file_content(answer, path_name)
+        content = clean_generated_content(path_name, content)
         result["files"].append({"path": path_name, "content": content})
     return result
+
+
+def repair_generated_consistency(context, data, attempts=2):
+    last_errors = []
+    for attempt in range(1, attempts + 1):
+        errors = check_generated_consistency(data)
+        if not errors:
+            return data, []
+
+        last_errors = errors
+        errors_text = "\n".join(f"- {error}" for error in errors)
+        save_output(f"consistency_errors_{attempt}.md", errors_text)
+        log(f"Внутренняя проверка нашла проблем: {len(errors)}. Исправляю до записи файлов...", 82)
+
+        runtime_context = build_runtime_context(context, data["files"], errors_text)
+        answer = call_yandex(build_consistency_repair_prompt(runtime_context, errors_text))
+        save_output("last_response.md", answer)
+        save_output(f"consistency_repair_manifest_{attempt}.md", answer)
+        manifest = extract_json(answer)
+        manifest["files"] = filter_generated_files(manifest.get("files", []))
+        manifest["files"] = expand_manifest_file_items(runtime_context, manifest.get("files", []))
+        if not manifest["files"]:
+            break
+        fixes = build_full_change_set(runtime_context, manifest)
+        data = replace_generated_files(data, fixes)
+
+    final_errors = check_generated_consistency(data)
+    return data, final_errors or last_errors
+
+
+def repair_project(error_text, attempts=2):
+    all_changed = []
+    last_error = error_text
+    last_backup = None
+
+    for attempt in range(1, attempts + 1):
+        log(f"Исправление после проверки, попытка {attempt}/{attempts}...", 94)
+        context = build_context()
+        answer = call_yandex(build_repair_prompt(context, last_error))
+        save_output("last_response.md", answer)
+        save_output(f"repair_manifest_{attempt}.md", answer)
+
+        manifest = extract_json(answer)
+        manifest["files"] = filter_generated_files(manifest.get("files", []))
+        manifest["files"] = expand_manifest_file_items(context, manifest.get("files", []))
+        if not manifest["files"]:
+            raise ValueError("Проверка упала, но список файлов для исправления пустой.")
+
+        data = build_full_change_set(context, manifest)
+        changed, backup = write_files(data)
+        all_changed.extend(changed)
+        last_backup = backup
+
+        ok, check_output = validate_project()
+        save_output(f"repair_check_{attempt}.md", check_output)
+        if ok:
+            return True, check_output, all_changed, last_backup
+
+        last_error = check_output
+
+    return False, last_error, all_changed, last_backup
 
 
 def save_output(name, content):
@@ -519,7 +1992,7 @@ def command_collect():
     log("Собираю контекст из input и файлов проекта...", 10)
     context = build_context()
     path = save_output("context_preview.md", context)
-    assignment_count = len([path for path in INPUT_DIR.rglob("*") if path.is_file()])
+    assignment_count = len(collect_input_files())
     log(f"Контекст собран. Файлов задания: {assignment_count}.", 100)
     print(f"Файл: {path}")
 
@@ -528,7 +2001,7 @@ def command_plan():
     log("Собираю контекст...", 10)
     context = build_context()
     prompt = build_plan_prompt(context)
-    log("AI анализирует задание и готовит план...", 40)
+    log(" анализирует задание и готовит план...", 40)
     answer = call_yandex(prompt)
     save_output("last_response.md", answer)
     path = save_output("plan.md", answer)
@@ -538,22 +2011,48 @@ def command_plan():
 
 def command_apply():
     log("Собираю контекст...", 5)
-    context = build_context()
+    assignment_context = collect_assignment()
+    log("строит единый blueprint проекта...", 10)
+    blueprint = get_blueprint(assignment_context)
+    context = build_generation_context(blueprint)
     prompt = build_apply_prompt(context)
-    log("AI выбирает список файлов для изменения...", 15)
+    log(" выбирает список файлов для изменения...", 15)
     answer = call_yandex(prompt)
     save_output("last_response.md", answer)
     save_output("apply_manifest_response.md", answer)
     log("Разбираю список изменений от AI...", 25)
     manifest = extract_json(answer)
+    manifest = ensure_core_files(manifest)
+    manifest = ensure_blueprint_templates(manifest, blueprint)
+    manifest = ensure_support_files(manifest)
     assets = validate_assets(manifest)
+    manifest["files"] = expand_manifest_file_items(context, manifest.get("files", []))
     files_count = len(manifest.get("files", []))
-    log(f"AI предложил файлов: {files_count}, картинок: {len(assets)}.", 30)
+    log(f" предложил файлов: {files_count}, картинок: {len(assets)}.", 30)
+    for source, _, target_name in assets:
+        source_label = source.relative_to(INPUT_DIR).as_posix()
+        log(f"Картинка найдена: {source_label} -> {target_name}")
     data = build_full_change_set(context, manifest)
+    log("Проверяю согласованность сгенерированных файлов...", 82)
+    data, consistency_errors = repair_generated_consistency(context, data)
+    if consistency_errors:
+        errors_text = "\n".join(f"- {error}" for error in consistency_errors)
+        save_output("consistency_errors_final.md", errors_text)
+        raise ValueError("Сгенерированные файлы все еще не согласованы. Подробности: tools/output/consistency_errors_final.md")
     log("Записываю файлы и создаю backup...", 85)
     changed, backup = write_files(data)
     log("Копирую картинки...", 92)
     copied_assets = copy_assets(assets, backup)
+    log("Проверяю проект после изменений...", 93)
+    check_ok, check_output = validate_project()
+    save_output("check_after_apply.md", check_output)
+    repair_changed = []
+    repair_backup = None
+    if not check_ok:
+        log("Проверка упала, запускаю автоматическое исправление...", 94)
+        check_ok, check_output, repair_changed, repair_backup = repair_project(check_output)
+        save_output("check_after_repair.md", check_output)
+        changed.extend(repair_changed)
     report = [
         f"# Отчет AI-помощника {dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
         "",
@@ -568,6 +2067,16 @@ def command_apply():
         "## Backup",
         str(backup),
         "",
+        "## Backup исправления",
+        str(repair_backup or ""),
+        "",
+        "## Проверка Django",
+        "OK" if check_ok else "ОШИБКА",
+        "",
+        "```text",
+        check_output,
+        "```",
+        "",
         "## Команды",
         *(f"```powershell\n{command}\n```" for command in data.get("commands", [])),
         "",
@@ -578,12 +2087,17 @@ def command_apply():
     log("Готово.", 100)
     print(f"Изменено файлов: {len(changed)}")
     print(f"Скопировано картинок: {len(copied_assets)}")
+    print(f"Проверка Django: {'OK' if check_ok else 'ОШИБКА'}")
     print(f"Отчет: {path}")
     print(f"Backup: {backup}")
+    if repair_backup:
+        print(f"Backup исправления: {repair_backup}")
+    if not check_ok:
+        sys.exit(1)
 
 
 def command_test():
-    log("Проверяю подключение к Yandex AI Studio...", 50)
+    log("Проверяю подключение ...", 50)
     answer = call_yandex("Ответь одним предложением: API Yandex AI Studio работает.")
     log("Ответ получен.", 100)
     print(answer.strip())
@@ -605,8 +2119,7 @@ def command_ask(question):
 
 
 def command_chat():
-    log("Собираю контекст для чата...", 10)
-    context = build_context()
+    log("Подготавливаю чат...", 10)
     history = []
     log("Чат готов. Напиши вопрос или exit для выхода.", 100)
     while True:
@@ -616,18 +2129,79 @@ def command_chat():
             return
         if not question:
             continue
-        log("AI думает...", 50)
+        log("Собираю свежий контекст проекта...", 20)
+        context = build_context()
+        log(" думает...", 50)
         answer = call_yandex(build_question_prompt(context, question, history))
         history.append(f"Пользователь: {question}")
-        history.append(f"AI: {answer}")
+        history.append(f": {answer}")
         save_answer(question, answer)
         print(f"\nAI> {answer.strip()}")
+
+
+def find_backup(name=""):
+    if name:
+        backup = (BACKUP_DIR / name).resolve()
+        if not is_inside(BACKUP_DIR, backup) or not backup.exists() or not backup.is_dir():
+            raise ValueError(f"Backup не найден: {name}")
+        return backup
+
+    backups = sorted((path for path in BACKUP_DIR.iterdir() if path.is_dir()), reverse=True)
+    if not backups:
+        raise ValueError("Backup пока нет.")
+    return backups[0]
+
+
+def command_restore(name=""):
+    backup = find_backup(name)
+    restored = []
+    log(f"Восстанавливаю из backup: {backup.name}", 20)
+    for source in backup.rglob("*"):
+        if not source.is_file():
+            continue
+        relative = source.relative_to(backup).as_posix()
+        target = (PROJECT_ROOT / relative).resolve()
+        if not is_inside(PROJECT_ROOT, target):
+            raise ValueError(f"Путь вышел за пределы проекта: {relative}")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, target)
+        restored.append(relative)
+    log("Восстановление завершено.", 100)
+    print(f"Backup: {backup}")
+    print(f"Восстановлено файлов: {len(restored)}")
+    for path in restored:
+        print(f"- {path}")
+
+
+def command_check():
+    ok, output = validate_project()
+    path = save_output("manual_check.md", output)
+    print(output)
+    print(f"\nОтчет: {path}")
+    if not ok:
+        sys.exit(1)
+
+
+def command_repair():
+    ok, output = validate_project()
+    save_output("manual_check_before_repair.md", output)
+    if ok:
+        print("Проверка Django: OK")
+        return
+    ok, output, changed, backup = repair_project(output)
+    save_output("manual_check_after_repair.md", output)
+    print(f"Изменено файлов: {len(changed)}")
+    print(f"Backup исправления: {backup}")
+    print(f"Проверка Django: {'OK' if ok else 'ОШИБКА'}")
+    if not ok:
+        print(output)
+        sys.exit(1)
 
 
 def main():
     ensure_dirs()
     parser = argparse.ArgumentParser()
-    parser.add_argument("command", choices=["collect", "test", "plan", "apply", "ask", "chat"])
+    parser.add_argument("command", choices=["collect", "test", "plan", "apply", "ask", "chat", "restore", "check", "repair"])
     parser.add_argument("question", nargs=argparse.REMAINDER)
     args = parser.parse_args()
 
@@ -638,6 +2212,9 @@ def main():
         "apply": command_apply,
         "ask": lambda: command_ask(" ".join(args.question).strip()),
         "chat": command_chat,
+        "restore": lambda: command_restore(" ".join(args.question).strip()),
+        "check": command_check,
+        "repair": command_repair,
     }
     try:
         commands[args.command]()
