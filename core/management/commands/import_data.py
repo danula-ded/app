@@ -20,50 +20,11 @@ from core.models import (
 )
 
 
-FILES = {
-    "points": "Пункты выдачи_import.xlsx",
-    "products": "Tovar.xlsx",
-    "users": "user_import.xlsx",
-    "orders": "Заказ_import.xlsx",
-}
-
-PRODUCT = {
-    "article": 0,
-    "name": 1,
-    "unit": 2,
-    "price": 3,
-    "supplier": 4,
-    "manufacturer": 5,
-    "category": 6,
-    "discount": 7,
-    "quantity": 8,
-    "description": 9,
-    "photo": 10,
-}
-
-USER = {
-    "role": 0,
-    "full_name": 1,
-    "login": 2,
-    "password": 3,
-}
-
-ORDER = {
-    "id": 0,
-    "items": 1,
-    "order_date": 2,
-    "delivery_date": 3,
-    "pickup_point": 4,
-    "user": 5,
-    "pickup_code": 6,
-    "status": 7,
-}
-
-ROLE_MAP = {
-    "Администратор": "admin",
-    "Менеджер": "manager",
-    "Авторизированный клиент": "client",
-}
+# На экзамене сначала меняй этот блок: добавляй и удаляй Excel-файлы.
+PICKUP_POINTS_FILE = "Пункты выдачи_import.xlsx"
+PRODUCTS_FILE = "Tovar.xlsx"
+USERS_FILE = "user_import.xlsx"
+ORDERS_FILE = "Заказ_import.xlsx"
 
 DATE_FORMATS = ("%d.%m.%Y", "%Y-%m-%d")
 
@@ -132,76 +93,103 @@ class Command(BaseCommand):
         if not folder.exists():
             folder = settings.BASE_DIR / "core" / "import"
 
-        self.run_if_exists(folder, "points", self.import_pickup_points)
-        self.run_if_exists(folder, "products", self.import_products)
-        self.run_if_exists(folder, "users", self.import_users)
-        self.run_if_exists(folder, "orders", self.import_orders)
+        # Здесь задается порядок импорта. Справочники должны идти раньше таблиц,
+        # которые на них ссылаются.
+        self.import_if_exists(folder, PICKUP_POINTS_FILE, self.import_pickup_points)
+        self.import_if_exists(folder, PRODUCTS_FILE, self.import_products)
+        self.import_if_exists(folder, USERS_FILE, self.import_users)
+        self.import_if_exists(folder, ORDERS_FILE, self.import_orders)
 
         self.stdout.write(self.style.SUCCESS("Импорт завершен"))
         self.stdout.write(f"Товаров: {Product.objects.count()}")
         self.stdout.write(f"Заказов: {Order.objects.count()}")
         self.stdout.write(f"Позиций заказов: {OrderItem.objects.count()}")
 
-    def run_if_exists(self, folder, file_key, import_function):
-        filename = FILES[file_key]
+    def import_if_exists(self, folder, filename, import_function):
+        file_path = folder / filename
 
-        if not (folder / filename).exists():
+        if not file_path.exists():
             self.stdout.write(f"Файл {filename} не найден, импорт пропущен")
             return
 
-        import_function(folder)
+        import_function(file_path)
 
-    def rows(self, folder, file_key, start=2):
-        sheet = load_workbook(folder / FILES[file_key], data_only=True).active
+    def rows(self, file_path, start=2):
+        sheet = load_workbook(file_path, data_only=True).active
         return sheet.iter_rows(min_row=start, values_only=True)
 
-    def import_pickup_points(self, folder):
-        for row in self.rows(folder, "points", start=1):
+    def import_pickup_points(self, file_path):
+        for row in self.rows(file_path, start=1):
+            # Пункты выдачи_import.xlsx:
+            # 0 - адрес
             address = text(cell(row, 0))
 
             if address:
                 PickupPoint.objects.get_or_create(address=address)
 
-    def import_products(self, folder):
-        for row in self.rows(folder, "products"):
-            article = text(cell(row, PRODUCT["article"]))
+    def import_products(self, file_path):
+        for row in self.rows(file_path):
+            # Tovar.xlsx:
+            # 0 - артикул, 1 - название, 2 - единица, 3 - цена
+            # 4 - поставщик, 5 - производитель, 6 - категория
+            # 7 - скидка, 8 - количество, 9 - описание, 10 - фото
+            article = text(cell(row, 0))
+            name = text(cell(row, 1))
+            unit_name = text(cell(row, 2))
+            price = number(cell(row, 3))
+            supplier_name = text(cell(row, 4))
+            manufacturer_name = text(cell(row, 5))
+            category_name = text(cell(row, 6))
+            discount = number(cell(row, 7))
+            quantity = number(cell(row, 8))
+            description = text(cell(row, 9))
+            photo = text(cell(row, 10))
 
             if not article:
                 continue
 
-            supplier, _ = Supplier.objects.get_or_create(name=text(cell(row, PRODUCT["supplier"])))
-            manufacturer, _ = Manufacturer.objects.get_or_create(name=text(cell(row, PRODUCT["manufacturer"])))
-            category, _ = Category.objects.get_or_create(name=text(cell(row, PRODUCT["category"])))
-            unit, _ = Unit.objects.get_or_create(name=text(cell(row, PRODUCT["unit"])) or "шт.")
-            photo = text(cell(row, PRODUCT["photo"]))
+            supplier, _ = Supplier.objects.get_or_create(name=supplier_name)
+            manufacturer, _ = Manufacturer.objects.get_or_create(name=manufacturer_name)
+            category, _ = Category.objects.get_or_create(name=category_name)
+            unit, _ = Unit.objects.get_or_create(name=unit_name or "шт.")
 
             Product.objects.update_or_create(
                 article=article,
                 defaults={
-                    "name": text(cell(row, PRODUCT["name"])),
+                    "name": name,
                     "unit": unit,
-                    "price": number(cell(row, PRODUCT["price"])),
+                    "price": price,
                     "supplier": supplier,
                     "manufacturer": manufacturer,
                     "category": category,
-                    "discount": number(cell(row, PRODUCT["discount"])),
-                    "quantity": number(cell(row, PRODUCT["quantity"])),
-                    "description": text(cell(row, PRODUCT["description"])),
+                    "discount": discount,
+                    "quantity": quantity,
+                    "description": description,
                     "photo": f"products/{photo}" if photo else "",
                 },
             )
 
-    def import_users(self, folder):
-        for row in self.rows(folder, "users"):
-            role_from_excel = text(cell(row, USER["role"]))
-            last_name, first_name, patronymic = split_name(cell(row, USER["full_name"]))
-            login = text(cell(row, USER["login"]))
-            password = text(cell(row, USER["password"]))
+    def import_users(self, file_path):
+        for row in self.rows(file_path):
+            # user_import.xlsx:
+            # 0 - роль, 1 - ФИО, 2 - логин, 3 - пароль
+            role_from_excel = text(cell(row, 0))
+            full_name = cell(row, 1)
+            login = text(cell(row, 2))
+            password = text(cell(row, 3))
+            last_name, first_name, patronymic = split_name(full_name)
 
             if not login:
                 continue
 
-            role_name = ROLE_MAP.get(role_from_excel, role_from_excel)
+            role_name = role_from_excel
+            if role_from_excel == "Администратор":
+                role_name = "admin"
+            elif role_from_excel == "Менеджер":
+                role_name = "manager"
+            elif role_from_excel == "Авторизированный клиент":
+                role_name = "client"
+
             role, _ = Role.objects.get_or_create(name=role_name)
 
             user, _ = User.objects.update_or_create(
@@ -217,11 +205,21 @@ class Command(BaseCommand):
             user.set_password(password)
             user.save()
 
-    def import_orders(self, folder):
-        for row in self.rows(folder, "orders"):
-            order_id = cell(row, ORDER["id"])
-            order_date = excel_date(cell(row, ORDER["order_date"]))
-            delivery_date = excel_date(cell(row, ORDER["delivery_date"]))
+    def import_orders(self, file_path):
+        for row in self.rows(file_path):
+            # Заказ_import.xlsx:
+            # 0 - ID, 1 - товары, 2 - дата заказа, 3 - дата выдачи
+            # 4 - пункт выдачи, 5 - пользователь, 6 - код, 7 - статус
+            order_id = cell(row, 0)
+            items_text = text(cell(row, 1))
+            order_date_value = cell(row, 2)
+            delivery_date_value = cell(row, 3)
+            pickup_point_id = cell(row, 4)
+            user_full_name = cell(row, 5)
+            pickup_code = number(cell(row, 6))
+            status_name = text(cell(row, 7))
+            order_date = excel_date(order_date_value)
+            delivery_date = excel_date(delivery_date_value)
 
             if not order_id:
                 continue
@@ -230,11 +228,11 @@ class Command(BaseCommand):
                 self.stdout.write(f"Заказ {order_id} пропущен: неправильная дата")
                 continue
 
-            pickup_point = PickupPoint.objects.filter(id=cell(row, ORDER["pickup_point"])).first()
+            pickup_point = PickupPoint.objects.filter(id=pickup_point_id).first()
             if pickup_point is None:
                 pickup_point = PickupPoint.objects.first()
 
-            status, _ = OrderStatus.objects.get_or_create(name=text(cell(row, ORDER["status"])))
+            status, _ = OrderStatus.objects.get_or_create(name=text(status_name))
 
             order, _ = Order.objects.update_or_create(
                 id=order_id,
@@ -242,14 +240,14 @@ class Command(BaseCommand):
                     "order_date": order_date,
                     "delivery_date": delivery_date,
                     "pickup_point": pickup_point,
-                    "user": self.find_user(cell(row, ORDER["user"])),
-                    "pickup_code": number(cell(row, ORDER["pickup_code"])),
+                    "user": self.find_user(user_full_name),
+                    "pickup_code": pickup_code,
                     "status": status,
                 },
             )
 
             OrderItem.objects.filter(order=order).delete()
-            self.create_order_items(order, text(cell(row, ORDER["items"])))
+            self.create_order_items(order, items_text)
 
     def create_order_items(self, order, items_text):
         parts = [part.strip() for part in items_text.split(",") if part.strip()]

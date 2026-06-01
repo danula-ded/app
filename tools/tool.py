@@ -801,7 +801,8 @@ def build_file_context(base_context, generated_files, path_name, extra_notes="")
             [
                 "# КОМПАКТНЫЙ КОНТЕКСТ ДЛЯ MODELS",
                 "Полностью адаптируй модели под BLUEPRINT и Excel. Не сохраняй старые модели шаблона, если они не нужны новому заданию.",
-                "Можно оставить User/Role только если нужны авторизация и роли.",
+                "Если в config/settings.py стоит AUTH_USER_MODEL = 'core.User', обязательно оставь в core/models.py class User(AbstractUser).",
+                "Если нужна авторизация или роли, не удаляй User/Role из шаблона, а адаптируй их минимально.",
                 base_context.split("# ОБОЛОЧКА ТЕКУЩЕГО DJANGO-ПРОЕКТА", 1)[0],
                 "\n# ОШИБКИ/ЗАМЕТКИ",
                 extra_notes,
@@ -2252,8 +2253,13 @@ def check_schema_consistency(data):
 
     models_tree = python_trees.get("core/models.py")
     import_tree = python_trees.get("core/management/commands/import_data.py")
+    models_content = read_project_or_generated(data, "core/models.py")
+    settings_content = read_project_or_generated(data, "config/settings.py")
     model_fields = extract_model_fields(models_tree)
     model_names = set(model_fields)
+
+    if auth_user_model_value(settings_content) == "core.User" and not has_custom_user_model(models_content):
+        errors.append("config/settings.py требует AUTH_USER_MODEL = core.User, но core/models.py не содержит class User(AbstractUser). Нельзя удалять User из моделей.")
 
     for path_name, tree in python_trees.items():
         if tree is None:
@@ -2573,6 +2579,7 @@ def command_schema():
             "Сейчас нужно сгенерировать только модели, admin.py и import_data.py.",
             "Не трогай forms.py, views.py, urls.py, templates, css и settings.py.",
             "core/models.py должен быть похож по простоте на текущий учебный Django-код, но полностью под новые Excel-данные.",
+            "Если settings.py содержит AUTH_USER_MODEL = 'core.User', core/models.py обязан содержать class User(AbstractUser).",
             "import_data.py должен быть простым, идемпотентным и читать Excel/CSV только из core/import.",
             "core/admin.py должен регистрировать только реальные модели из core/models.py.",
         ]
