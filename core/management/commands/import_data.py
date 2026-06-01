@@ -20,7 +20,6 @@ from core.models import (
 )
 
 
-# На экзамене сначала меняй этот блок: добавляй и удаляй Excel-файлы.
 PICKUP_POINTS_FILE = "Пункты выдачи_import.xlsx"
 PRODUCTS_FILE = "Tovar.xlsx"
 USERS_FILE = "user_import.xlsx"
@@ -93,8 +92,6 @@ class Command(BaseCommand):
         if not folder.exists():
             folder = settings.BASE_DIR / "core" / "import"
 
-        # Здесь задается порядок импорта. Справочники должны идти раньше таблиц,
-        # которые на них ссылаются.
         self.import_if_exists(folder, PICKUP_POINTS_FILE, self.import_pickup_points)
         self.import_if_exists(folder, PRODUCTS_FILE, self.import_products)
         self.import_if_exists(folder, USERS_FILE, self.import_users)
@@ -120,8 +117,6 @@ class Command(BaseCommand):
 
     def import_pickup_points(self, file_path):
         for row in self.rows(file_path, start=1):
-            # Пункты выдачи_import.xlsx:
-            # 0 - адрес
             address = text(cell(row, 0))
 
             if address:
@@ -129,10 +124,6 @@ class Command(BaseCommand):
 
     def import_products(self, file_path):
         for row in self.rows(file_path):
-            # Tovar.xlsx:
-            # 0 - артикул, 1 - название, 2 - единица, 3 - цена
-            # 4 - поставщик, 5 - производитель, 6 - категория
-            # 7 - скидка, 8 - количество, 9 - описание, 10 - фото
             article = text(cell(row, 0))
             name = text(cell(row, 1))
             unit_name = text(cell(row, 2))
@@ -171,8 +162,6 @@ class Command(BaseCommand):
 
     def import_users(self, file_path):
         for row in self.rows(file_path):
-            # user_import.xlsx:
-            # 0 - роль, 1 - ФИО, 2 - логин, 3 - пароль
             role_from_excel = text(cell(row, 0))
             full_name = cell(row, 1)
             login = text(cell(row, 2))
@@ -207,9 +196,6 @@ class Command(BaseCommand):
 
     def import_orders(self, file_path):
         for row in self.rows(file_path):
-            # Заказ_import.xlsx:
-            # 0 - ID, 1 - товары, 2 - дата заказа, 3 - дата выдачи
-            # 4 - пункт выдачи, 5 - пользователь, 6 - код, 7 - статус
             order_id = cell(row, 0)
             items_text = text(cell(row, 1))
             order_date_value = cell(row, 2)

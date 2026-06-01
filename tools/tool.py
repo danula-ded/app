@@ -1666,6 +1666,8 @@ from core import views
 
 templates = {'core/base.html', 'core/login.html'}
 for value in vars(views).values():
+    if getattr(value, '__module__', '') != 'core.views':
+        continue
     template_name = getattr(value, 'template_name', None)
     if isinstance(template_name, str):
         templates.add(template_name)
@@ -1944,6 +1946,24 @@ def extract_model_fields(tree):
         if not isinstance(node, ast.ClassDef):
             continue
         current = {"id"}
+        base_names = {base.id for base in node.bases if isinstance(base, ast.Name)}
+        if "AbstractUser" in base_names:
+            current.update(
+                {
+                    "password",
+                    "last_login",
+                    "is_superuser",
+                    "username",
+                    "first_name",
+                    "last_name",
+                    "email",
+                    "is_staff",
+                    "is_active",
+                    "date_joined",
+                    "groups",
+                    "user_permissions",
+                }
+            )
         for statement in node.body:
             if isinstance(statement, ast.Assign) and call_name(statement.value) in MODEL_FIELD_TYPES:
                 for target in statement.targets:
@@ -1963,6 +1983,12 @@ def extract_form_models_and_fields(tree):
     for node in ast.walk(tree):
         if not isinstance(node, ast.ClassDef):
             continue
+        declared_form_fields = set()
+        for statement in node.body:
+            if isinstance(statement, ast.Assign) and call_name(statement.value) in MODEL_FIELD_TYPES:
+                for target in statement.targets:
+                    if isinstance(target, ast.Name):
+                        declared_form_fields.add(target.id)
         for child in node.body:
             if not isinstance(child, ast.ClassDef) or child.name != "Meta":
                 continue
@@ -1976,6 +2002,7 @@ def extract_form_models_and_fields(tree):
                     model_name = statement.value.id
                 if "fields" in targets and isinstance(statement.value, (ast.List, ast.Tuple)):
                     fields = [item.value for item in statement.value.elts if isinstance(item, ast.Constant) and isinstance(item.value, str)]
+                    fields = [field for field in fields if field not in declared_form_fields]
             if model_name and fields:
                 forms.append((node.name, model_name, fields))
     return forms
@@ -2093,7 +2120,10 @@ def views_have_list_controls(views_content):
 
 def is_list_template(path_name):
     normalized = normalize_relative_path(path_name)
-    return normalized.startswith("core/templates/core/") and normalized.endswith(".html") and "list" in Path(normalized).stem
+    name = Path(normalized).stem
+    if name in {"order_list"}:
+        return False
+    return normalized.startswith("core/templates/core/") and normalized.endswith(".html") and "list" in name
 
 
 def template_has_list_controls(content):

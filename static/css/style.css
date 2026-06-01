@@ -101,9 +101,25 @@ button,
 }
 
 .message {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
   border: 1px solid #111;
   padding: 10px;
   background: #e6f2ff;
+}
+
+.message strong,
+.message span {
+  display: block;
+}
+
+.message-icon {
+  width: 14px;
+  height: 14px;
+  margin-top: 3px;
+  border: 2px solid #111;
+  border-radius: 50%;
 }
 
 .message.error {

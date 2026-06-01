@@ -39,7 +39,21 @@
         {% if messages %}
             <div class="messages">
                 {% for message in messages %}
-                    <div class="message {{ message.tags }}">{{ message }}</div>
+                    <div class="message {{ message.tags }}">
+                        <span class="message-icon" aria-hidden="true"></span>
+                        <div>
+                            <strong>
+                                {% if "error" in message.tags %}
+                                    Ошибка
+                                {% elif "success" in message.tags %}
+                                    Информация
+                                {% else %}
+                                    Сообщение
+                                {% endif %}
+                            </strong>
+                            <span>{{ message }}</span>
+                        </div>
+                    </div>
                 {% endfor %}
             </div>
         {% endif %}

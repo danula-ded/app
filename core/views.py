@@ -48,6 +48,10 @@ class ProductListView(ListView):
     template_name = "core/product_list.html"
     context_object_name = "products"
 
+    def dispatch(self, request, *args, **kwargs):
+        request.session.pop("editing_product_id", None)
+        return super().dispatch(request, *args, **kwargs)
+
     def get_queryset(self):
         products = Product.objects.select_related(
             "category",
@@ -114,7 +118,24 @@ class ProductUpdateView(AdminRequiredMixin, UpdateView):
     template_name = "core/product_form.html"
     success_url = reverse_lazy("product_list")
 
+    def dispatch(self, request, *args, **kwargs):
+        product_id = str(kwargs["pk"])
+        editing_product_id = request.session.get("editing_product_id")
+
+        if request.method == "GET":
+            if editing_product_id and editing_product_id != product_id:
+                messages.error(
+                    request,
+                    "Сначала завершите редактирование открытого товара.",
+                )
+                return redirect("product_list")
+
+            request.session["editing_product_id"] = product_id
+
+        return super().dispatch(request, *args, **kwargs)
+
     def form_valid(self, form):
+        self.request.session.pop("editing_product_id", None)
         messages.success(self.request, "Товар обновлен.")
         return super().form_valid(form)
 
